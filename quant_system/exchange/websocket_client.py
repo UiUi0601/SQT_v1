@@ -249,9 +249,15 @@ class BinanceUserStream:
                 log.warning(f"[WS-{self._market.value}] Listen Key 保活失敗: {e}")
 
     def _put_listen_key(self, listen_key):
-        """同步 PUT /xxx/userDataStream 續期 Listen Key。"""
+        """定時 PUT /xxx/userDataStream 延長 Listen Key壽命"""
         import urllib.request
         url  = _LISTEN_KEY_KEEPALIVE[self._market]
+        if self._testnet:
+            if self._market in (StreamMarket.SPOT, StreamMarket.MARGIN):
+                url = url.replace("api.binance.com", "testnet.binance.vision")
+            elif self._market == StreamMarket.FUTURES:
+                url = url.replace("fapi.binance.com", "testnet.binancefuture.com")
+
         data = urlencode({"listenKey": listen_key}).encode()
         req  = urllib.request.Request(url, data=data, method="PUT",
                                       headers={"X-MBX-APIKEY": self._api_key})
@@ -349,9 +355,17 @@ class BinanceUserStream:
     def _create_listen_key(self):
         import urllib.request
         url = _LISTEN_KEY_CREATE[self._market]
+        if self._testnet:
+            if self._market in (StreamMarket.SPOT, StreamMarket.MARGIN):
+                url = url.replace("api.binance.com", "testnet.binance.vision")
+            elif self._market == StreamMarket.FUTURES:
+                url = url.replace("fapi.binance.com", "testnet.binancefuture.com")
+
         if self._market == StreamMarket.MARGIN and self._isolated_symbol:
             params = urlencode({"isIsolated": "TRUE", "symbol": self._isolated_symbol})
             url  = f"https://api.binance.com/sapi/v1/userDataStream/isolated?{params}"
+            if self._testnet:
+                url = url.replace("api.binance.com", "testnet.binance.vision")
             data = None
         else:
             data = b""

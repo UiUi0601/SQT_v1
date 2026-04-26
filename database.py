@@ -852,7 +852,7 @@ class TradeDB:
                 "WHERE status IN ('FILLED','CANCELLED') AND filled_at < ?",
                 (cutoff,)
             ).rowcount
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             return r
 
         results = _w(_write).result(timeout=60)
