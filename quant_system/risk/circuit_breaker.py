@@ -163,6 +163,41 @@ class CircuitBreaker:
                         f"連續 {self._half_open_ok} 次 API 成功"
                     )
 
+    def record_scoring_error(
+        self,
+        score_result,
+        detail: str = "",
+    ) -> bool:
+        """
+        由評分引擎觸發錯誤記錄的橋接方法。
+
+        score_result: ScoringEngine 的 ScoreResult 物件，
+        若 final_score 為 NaN 或評分失敗（所有因子跳過），視為 API 錯誤記錄。
+
+        回傳 True = 本次觸發了新的熔斷。
+        """
+        import math
+        final_score   = getattr(score_result, "final_score", 0.0)
+        skipped       = getattr(score_result, "skipped_factors", [])
+        all_factors   = {"tech", "momentum", "mean_rev", "trend",
+                         "funding", "orderflow", "sentiment"}
+        all_skipped   = set(skipped) >= all_factors
+
+        if math.isnan(final_score) or all_skipped:
+            ctx = detail or f"score=NaN or all_factors_skipped={all_skipped}"
+            return self.record_error(detail=ctx)
+        return False
+
+    def check_with_market(self, market_type: str = "SPOT") -> Tuple[bool, str]:
+        """
+        多業務線適配的 check()。
+        功能與 check() 相同，附加業務線標識至原因訊息。
+        """
+        ok, reason = self.check()
+        if not ok:
+            reason = f"[{market_type}] {reason}"
+        return ok, reason
+
     def reset(self) -> None:
         """手動強制關閉斷路器（管理員操作）。"""
         with self._lock:

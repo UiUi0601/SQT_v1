@@ -1,310 +1,361 @@
 """
-quant_system/execution/order_manager.py — 訂單生命週期管理（強化版）
+quant_system/execution/order_manager.py — 三業務線訂單管理器
 
-修復項目：
-  ① UUID 碰撞防護  — 時間戳毫秒 + UUID hex 前綴，碰撞機率趨近於零
-  ② 記憶體洩漏修復 — 自動清理 FILLED/CANCELLED 舊單，上限 1000 筆
-  ③ PENDING 死鎖防護 — has_pending() 內建 30 秒超時自動解鎖
-  ④ 冪等下單        — 每筆訂單的 client_order_id 供 Binance newClientOrderId 使用
-  ⑤ 執行緒安全      — 所有公開方法持有 threading.Lock
+支援業務線：
+  SPOT    — 現貨限價/市價掛單
+  FUTURES — U 本位永續合約（含預設 marginType + leverage、Hedge Mode）
+  MARGIN  — 全倉 / 逐倉槓桿（含自動借幣 / 自動還幣）
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import threading
 import time
 import uuid
-from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
-# ── 常數 ─────────────────────────────────────────────────────
-_MAX_ORDERS:       int   = 1000      # _orders 字典上限
-_COMPLETED_TTL:    float = 3600.0    # 已完成訂單保留時長（秒），1 小時後清除
-_PENDING_TIMEOUT:  float = 30.0      # PENDING 狀態超時閾值（秒）
+
+# ── 列舉 ────────────────────────────────────────────────────
+class OrderStatus(str, Enum):
+    PENDING   = "PENDING"
+    SUBMITTED = "SUBMITTED"
+    FILLED    = "FILLED"
+    PARTIAL   = "PARTIAL"
+    CANCELLED = "CANCELLED"
+    REJECTED  = "REJECTED"
+    ERROR     = "ERROR"
 
 
-def _make_client_order_id() -> str:
-    """
-    生成不易碰撞的訂單 ID，格式：{ms_timestamp}_{uuid_hex8}
-    長度約 22 字元，符合 Binance newClientOrderId ≤ 36 字元的規範。
-
-    例：1745123456789_a1b2c3d4
-    """
-    ms  = int(time.time() * 1000)
-    uid = uuid.uuid4().hex[:8]
-    return f"{ms}_{uid}"
+class OrderSide(str, Enum):
+    BUY  = "BUY"
+    SELL = "SELL"
 
 
+class OrderType(str, Enum):
+    LIMIT  = "LIMIT"
+    MARKET = "MARKET"
+
+
+# ── 訂單資料類別 ──────────────────────────────────────────────
 @dataclass
 class Order:
-    order_id:         str    # 內部 client_order_id（同時作為 Binance newClientOrderId）
-    symbol:           str
-    side:             str           # BUY | SELL
-    order_type:       str           # MARKET | LIMIT
-    quantity:         float
-    strategy:         str   = ""
-    status:           str   = "PENDING"  # PENDING | FILLED | REJECTED | CANCELLED | TIMEOUT
-    fill_price:       float = 0.0
-    fill_qty:         float = 0.0
-    fee:              float = 0.0
-    binance_order_id: str   = ""    # Binance 回傳的整數 orderId（字串化儲存）
-    reject_reason:    str   = ""
-    created_ts:       float = field(default_factory=time.time)   # 用於超時判斷
-    created_at:       str   = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    filled_at:        str   = ""
+    symbol:         str
+    side:           str                     # BUY / SELL
+    order_type:     str                     # LIMIT / MARKET
+    quantity:       float
+    price:          Optional[float] = None
+
+    # 多業務線擴充欄位
+    market_type:    str   = "SPOT"          # SPOT / FUTURES / MARGIN
+    position_side:  str   = "BOTH"          # BOTH / LONG / SHORT (Futures Hedge Mode)
+    leverage:       int   = 1               # 槓桿倍數（Futures）
+    margin_type:    str   = "CROSSED"       # CROSSED / ISOLATED（Futures）
+    is_isolated:    bool  = False           # 逐倉槓桿（Margin）
+    side_effect_type: str = "NO_SIDE_EFFECT"  # MARGIN_BUY / AUTO_REPAY（Margin）
+    reduce_only:    bool  = False           # 只減倉（Futures）
+    realized_pnl:   float = 0.0             # 實現盈虧（Futures 回報）
+
+    # 系統欄位
+    client_order_id: str  = field(default_factory=lambda: f"sqt_{uuid.uuid4().hex[:12]}")
+    order_id:        str  = ""
+    status:          str  = OrderStatus.PENDING
+    filled_qty:      float = 0.0
+    avg_price:       float = 0.0
+    created_at:      float = field(default_factory=time.time)
+    updated_at:      float = field(default_factory=time.time)
+    raw_response:    Optional[Dict] = field(default=None, repr=False)
 
 
+# ── 訂單管理器 ───────────────────────────────────────────────
 class OrderManager:
     """
-    管理訂單生命週期，確保同一標的不重複送單。
+    三業務線統一訂單管理器。
 
-    設計要點：
-      - 所有公開方法持有同一把 Lock，確保多執行緒安全
-      - _orders 使用 OrderedDict 以插入順序追蹤，方便 LRU 清理
-      - _pending 映射 symbol → client_order_id
+    Parameters
+    ----------
+    client          : AsyncExchangeClient 實例（已設定對應業務線）
+    metadata        : BinanceMetadata 實例（用於精度校正）
+    hedge_mode      : Futures 是否為雙向持倉（Hedge Mode）
+    on_fill         : 訂單完全成交回調 (order) -> None
+    on_reject       : 訂單被拒回調 (order, reason) -> None
+    on_partial      : 部分成交回調 (order) -> None
+    max_orders      : 最大追蹤訂單數（超過則清理最舊已終態訂單）
     """
 
     def __init__(
         self,
-        max_orders:      int   = _MAX_ORDERS,
-        completed_ttl:   float = _COMPLETED_TTL,
-        pending_timeout: float = _PENDING_TIMEOUT,
-    ) -> None:
-        self._lock    = threading.Lock()
-        self._orders: OrderedDict[str, Order] = OrderedDict()
-        self._pending: Dict[str, str] = {}   # symbol → client_order_id
+        client,
+        metadata=None,
+        hedge_mode: bool = False,
+        on_fill:    Optional[Callable] = None,
+        on_reject:  Optional[Callable] = None,
+        on_partial: Optional[Callable] = None,
+        max_orders: int = 500,
+    ):
+        self._client    = client
+        self._metadata  = metadata
+        self._hedge     = hedge_mode
+        self._on_fill   = on_fill
+        self._on_reject = on_reject
+        self._on_partial = on_partial
+        self._max_orders = max_orders
 
-        self._max_orders      = max_orders
-        self._completed_ttl   = completed_ttl
-        self._pending_timeout = pending_timeout
+        self._orders: Dict[str, Order] = {}   # client_order_id -> Order
+        self._stats = {
+            "submitted": 0, "filled": 0, "cancelled": 0,
+            "rejected": 0,  "errors": 0,
+        }
 
     # ════════════════════════════════════════════════════════
-    # ① 建立訂單（含時間戳 ID 生成）
+    # 公開介面
     # ════════════════════════════════════════════════════════
-    def create_order(
-        self,
-        symbol:     str,
-        side:       str,
-        order_type: str,
-        quantity:   float,
-        strategy:   str = "",
-    ) -> Optional[Order]:
+    async def submit_order(self, order: Order) -> Order:
         """
-        建立新訂單。同一 symbol 有未超時的 PENDING 訂單時拒絕建立。
-        回傳 Order（含 order_id 作為 Binance newClientOrderId）或 None。
+        提交訂單至對應業務線。
+        自動執行：精度校正 → 路由 → 狀態更新 → 回調觸發。
         """
-        with self._lock:
-            # ③ PENDING 超時檢查（在 has_pending 內部邏輯）
-            if self._has_pending_locked(symbol):
-                log.warning(
-                    f"[OrderMgr] {symbol} 已有 PENDING 訂單 "
-                    f"{self._pending.get(symbol)}，拒絕重複送單"
-                )
-                return None
+        self._floor_values(order)
+        self._register(order)
 
-            # ① 時間戳 + UUID 複合 ID
-            oid = _make_client_order_id()
+        try:
+            if order.market_type == "FUTURES":
+                resp = await self._submit_futures(order)
+            elif order.market_type == "MARGIN":
+                resp = await self._submit_margin(order)
+            else:
+                resp = await self._submit_spot(order)
 
-            order = Order(
-                order_id   = oid,
-                symbol     = symbol,
-                side       = side,
-                order_type = order_type,
-                quantity   = quantity,
-                strategy   = strategy,
+            order.order_id    = str(resp.get("orderId", ""))
+            order.status      = OrderStatus.SUBMITTED
+            order.raw_response = resp
+            order.updated_at  = time.time()
+            self._stats["submitted"] += 1
+            log.info(
+                f"[OM] 訂單提交成功 [{order.market_type}] "
+                f"{order.side} {order.quantity} {order.symbol} "
+                f"@ {order.price} | id={order.order_id}"
             )
-
-            self._orders[oid] = order
-            self._pending[symbol] = oid
-
-            log.debug(
-                f"[OrderMgr] 新訂單 client_oid={oid} "
-                f"{side} {symbol} qty={quantity:.6f}"
-            )
-
-            # ② 建立後觸發一次清理（懶清理，不影響熱路徑效能）
-            self._cleanup_old_orders_locked()
-
-            return order
-
-    # ════════════════════════════════════════════════════════
-    # 成交回調
-    # ════════════════════════════════════════════════════════
-    def fill_order(
-        self,
-        order_id:         str,
-        fill_price:       float,
-        fill_qty:         float,
-        fee:              float = 0.0,
-        binance_order_id: str   = "",
-    ) -> None:
-        with self._lock:
-            o = self._orders.get(order_id)
-            if not o:
-                return
-            o.status           = "FILLED"
-            o.fill_price       = fill_price
-            o.fill_qty         = fill_qty
-            o.fee              = fee
-            o.binance_order_id = binance_order_id
-            o.filled_at        = datetime.now(timezone.utc).isoformat()
-            self._pending.pop(o.symbol, None)
-            log.debug(
-                f"[OrderMgr] 成交 {order_id} "
-                f"px={fill_price:.4f} qty={fill_qty:.6f} fee={fee:.4f}"
-            )
-
-    def reject_order(self, order_id: str, reason: str = "") -> None:
-        with self._lock:
-            o = self._orders.get(order_id)
-            if not o:
-                return
-            o.status        = "REJECTED"
-            o.reject_reason = reason
-            self._pending.pop(o.symbol, None)
-            log.warning(f"[OrderMgr] 拒絕 {order_id}: {reason}")
-
-    def cancel_pending(self, symbol: str) -> None:
-        with self._lock:
-            oid = self._pending.pop(symbol, None)
-            if oid and oid in self._orders:
-                self._orders[oid].status = "CANCELLED"
-                log.info(f"[OrderMgr] 手動撤銷 {symbol} 的 PENDING 訂單 {oid}")
-
-    # ════════════════════════════════════════════════════════
-    # ③ PENDING 超時查詢（30 秒自動解鎖）
-    # ════════════════════════════════════════════════════════
-    def has_pending(self, symbol: str) -> bool:
-        with self._lock:
-            return self._has_pending_locked(symbol)
-
-    def _has_pending_locked(self, symbol: str) -> bool:
-        """需在 _lock 內呼叫。"""
-        oid = self._pending.get(symbol)
-        if not oid:
-            return False
-
-        order = self._orders.get(oid)
-        if order is None:
-            # 孤立的 pending 條目，清除
-            del self._pending[symbol]
-            log.warning(f"[OrderMgr] 清除孤立 pending entry: {symbol}")
-            return False
-
-        # 非 PENDING 狀態（已成交/撤銷但 _pending 未清除）
-        if order.status != "PENDING":
-            del self._pending[symbol]
-            return False
-
-        # ── 超時檢查 ──────────────────────────────────────
-        age = time.time() - order.created_ts
-        if age > self._pending_timeout:
-            order.status = "TIMEOUT"
-            del self._pending[symbol]
-            log.warning(
-                f"[OrderMgr] ⏱ {symbol} PENDING 訂單 {oid} "
-                f"超時 {age:.0f}s（上限 {self._pending_timeout:.0f}s），"
-                f"自動解鎖，允許重新送單"
-            )
-            return False
-
-        return True
-
-    # ════════════════════════════════════════════════════════
-    # 查詢
-    # ════════════════════════════════════════════════════════
-    def get_order(self, order_id: str) -> Optional[Order]:
-        with self._lock:
-            return self._orders.get(order_id)
-
-    def get_pending_order(self, symbol: str) -> Optional[Order]:
-        """取得 symbol 目前 PENDING 中的訂單（若存在）。"""
-        with self._lock:
-            oid = self._pending.get(symbol)
-            return self._orders.get(oid) if oid else None
-
-    def stats(self) -> Dict:
-        with self._lock:
-            total     = len(self._orders)
-            pending   = len(self._pending)
-            completed = sum(
-                1 for o in self._orders.values()
-                if o.status in ("FILLED", "CANCELLED", "REJECTED", "TIMEOUT")
-            )
-            return {
-                "total":     total,
-                "pending":   pending,
-                "completed": completed,
-                "active":    total - completed,
-            }
-
-    # ════════════════════════════════════════════════════════
-    # ② 記憶體清理（需在 _lock 內呼叫）
-    # ════════════════════════════════════════════════════════
-    def _cleanup_old_orders_locked(self) -> None:
-        """
-        保留策略：
-          1. 清除 filled_at 距今超過 _completed_ttl 的已完成訂單
-          2. 若仍超過 _max_orders，按插入順序刪除最舊的已完成訂單
-        PENDING 訂單不會被清除（防止意外解鎖）。
-        """
-        if len(self._orders) <= self._max_orders:
-            return
-
-        now = time.time()
-        terminal = {"FILLED", "CANCELLED", "REJECTED", "TIMEOUT"}
-
-        # 第一輪：清除 TTL 已到期的已完成訂單
-        to_remove = []
-        for oid, order in self._orders.items():
-            if order.status not in terminal:
-                continue
-            # 以 filled_at 或 created_ts 計算年齡
-            ref_ts = order.created_ts
-            if order.filled_at:
+        except Exception as e:
+            order.status     = OrderStatus.ERROR
+            order.updated_at = time.time()
+            self._stats["errors"] += 1
+            log.error(f"[OM] 訂單提交失敗 {order.client_order_id}: {e}", exc_info=True)
+            if self._on_reject:
                 try:
-                    ref_ts = datetime.fromisoformat(order.filled_at).timestamp()
+                    self._on_reject(order, str(e))
                 except Exception:
                     pass
-            if (now - ref_ts) > self._completed_ttl:
-                to_remove.append(oid)
+            raise
 
-        for oid in to_remove:
-            self._orders.pop(oid, None)
+        return order
 
-        # 第二輪：若仍超過上限，按插入順序刪除最舊的已完成訂單
-        if len(self._orders) > self._max_orders:
-            excess = len(self._orders) - self._max_orders
-            removed = 0
-            for oid in list(self._orders.keys()):
-                if removed >= excess:
-                    break
-                if self._orders[oid].status in terminal:
-                    self._orders.pop(oid, None)
-                    removed += 1
+    async def cancel_order(self, client_order_id: str) -> bool:
+        """取消訂單，依業務線呼叫對應 API。"""
+        order = self._orders.get(client_order_id)
+        if not order:
+            log.warning(f"[OM] 找不到訂單 {client_order_id}")
+            return False
 
-        if to_remove or removed > 0:
-            log.debug(
-                f"[OrderMgr] 清理完成：移除 {len(to_remove) + (removed if 'removed' in dir() else 0)} 筆"
-                f"，剩餘 {len(self._orders)} 筆"
-            )
+        try:
+            if order.market_type == "FUTURES":
+                await self._client.cancel_futures_order(
+                    order.symbol, order_id=order.order_id)
+            else:
+                await self._client.cancel_order(
+                    order.symbol, order_id=order.order_id)
+            order.status     = OrderStatus.CANCELLED
+            order.updated_at = time.time()
+            self._stats["cancelled"] += 1
+            log.info(f"[OM] 訂單已取消 {client_order_id}")
+            return True
+        except Exception as e:
+            log.error(f"[OM] 取消訂單失敗 {client_order_id}: {e}")
+            return False
+
+    async def cancel_all(self, symbol: str) -> int:
+        """取消指定交易對的所有掛單。"""
+        cancelled = 0
+        try:
+            if self._client._market.value == "FUTURES":
+                await self._client.cancel_all_futures_orders(symbol)
+            else:
+                await self._client.cancel_all_orders(symbol)
+            for order in self._orders.values():
+                if (order.symbol == symbol and
+                        order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIAL)):
+                    order.status     = OrderStatus.CANCELLED
+                    order.updated_at = time.time()
+                    cancelled += 1
+            self._stats["cancelled"] += cancelled
+            log.info(f"[OM] 批次取消 {symbol}：{cancelled} 筆")
+        except Exception as e:
+            log.error(f"[OM] 批次取消失敗 {symbol}: {e}")
+        return cancelled
+
+    def on_execution_report(self, event) -> None:
+        """
+        處理 WebSocket executionReport / ORDER_TRADE_UPDATE。
+        由外部 UserStream 事件迴圈呼叫。
+        """
+        coid   = getattr(event, "client_oid", "")
+        status = getattr(event, "order_status", "")
+        order  = self._orders.get(coid)
+        if not order:
+            return
+
+        order.updated_at = time.time()
+
+        if hasattr(event, "realized_pnl"):
+            order.realized_pnl = event.realized_pnl
+
+        if status == "FILLED":
+            order.filled_qty = getattr(event, "executed_qty",
+                               getattr(event, "orig_qty", order.quantity))
+            order.avg_price  = getattr(event, "avg_price",
+                               getattr(event, "last_exec_price", order.avg_price))
+            order.status     = OrderStatus.FILLED
+            self._stats["filled"] += 1
+            log.info(f"[OM] 訂單完全成交 {coid} qty={order.filled_qty} avg={order.avg_price}")
+            if self._on_fill:
+                try:
+                    self._on_fill(order)
+                except Exception:
+                    pass
+
+        elif status in ("PARTIALLY_FILLED",):
+            order.filled_qty = getattr(event, "executed_qty", order.filled_qty)
+            order.status     = OrderStatus.PARTIAL
+            if self._on_partial:
+                try:
+                    self._on_partial(order)
+                except Exception:
+                    pass
+
+        elif status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+            order.status = OrderStatus.CANCELLED if "CANCEL" in status else OrderStatus.REJECTED
+            if status == "REJECTED":
+                self._stats["rejected"] += 1
+                if self._on_reject:
+                    try:
+                        self._on_reject(order, status)
+                    except Exception:
+                        pass
+
+    # ── 查詢 ─────────────────────────────────────────────────
+    def get_order(self, client_order_id: str) -> Optional[Order]:
+        return self._orders.get(client_order_id)
+
+    def list_orders(
+        self,
+        symbol:  Optional[str] = None,
+        status:  Optional[str] = None,
+        market:  Optional[str] = None,
+    ) -> List[Order]:
+        result = list(self._orders.values())
+        if symbol: result = [o for o in result if o.symbol == symbol]
+        if status: result = [o for o in result if o.status == status]
+        if market: result = [o for o in result if o.market_type == market]
+        return sorted(result, key=lambda o: o.created_at, reverse=True)
+
+    @property
+    def stats(self) -> Dict[str, int]:
+        return dict(self._stats)
 
     # ════════════════════════════════════════════════════════
-    # 手動觸發完整清理（可由外部排程呼叫）
+    # 內部路由（依業務線）
     # ════════════════════════════════════════════════════════
-    def cleanup(self) -> Tuple[int, int]:
-        """
-        手動觸發清理。回傳 (清理前筆數, 清理後筆數)。
-        """
-        with self._lock:
-            before = len(self._orders)
+    async def _submit_spot(self, order: Order) -> Dict:
+        return await self._client.place_spot_order(
+            symbol          = order.symbol,
+            side            = order.side,
+            order_type      = order.order_type,
+            quantity        = order.quantity,
+            price           = order.price,
+            client_order_id = order.client_order_id,
+        )
+
+    async def _submit_futures(self, order: Order) -> Dict:
+        # ① 預設保證金模式（忽略 -4046：已設定，無需更改）
+        try:
+            await self._client.set_margin_type(order.symbol, order.margin_type)
+        except Exception as e:
+            raw = str(e)
+            if "-4046" not in raw:
+                log.warning(f"[OM] set_margin_type 失敗（非 -4046）: {e}")
+
+        # ② 設定槓桿倍數
+        try:
+            await self._client.set_leverage(order.symbol, order.leverage)
+        except Exception as e:
+            log.warning(f"[OM] set_leverage 失敗: {e}")
+
+        # ③ Hedge Mode：自動附加 positionSide
+        pos_side = None
+        if self._hedge:
+            pos_side = "LONG" if order.side == "BUY" else "SHORT"
+        elif order.position_side != "BOTH":
+            pos_side = order.position_side
+
+        return await self._client.place_futures_order(
+            symbol          = order.symbol,
+            side            = order.side,
+            order_type      = order.order_type,
+            quantity        = order.quantity,
+            price           = order.price,
+            position_side   = pos_side,
+            client_order_id = order.client_order_id,
+            reduce_only     = order.reduce_only,
+        )
+
+    async def _submit_margin(self, order: Order) -> Dict:
+        return await self._client.place_margin_order(
+            symbol           = order.symbol,
+            side             = order.side,
+            order_type       = order.order_type,
+            quantity         = order.quantity,
+            price            = order.price,
+            is_isolated      = order.is_isolated,
+            side_effect_type = order.side_effect_type,
+            client_order_id  = order.client_order_id,
+        )
+
+    # ════════════════════════════════════════════════════════
+    # 內部工具
+    # ════════════════════════════════════════════════════════
+    def _floor_values(self, order: Order) -> None:
+        """利用 BinanceMetadata 對價格/數量做截斷（floor）處理。"""
+        if self._metadata is None:
+            return
+        try:
+            rule = self._metadata.get_rule(order.symbol)
+            if rule is None:
+                return
+            if order.price is not None:
+                order.price = self._metadata.floor_price(order.symbol, order.price)
+            order.quantity = self._metadata.floor_qty(order.symbol, order.quantity)
+        except Exception as e:
+            log.warning(f"[OM] _floor_values 失敗 {order.symbol}: {e}")
+
+    def _register(self, order: Order) -> None:
+        """登記訂單；超過上限時清理已終態的最舊訂單。"""
+        if len(self._orders) >= self._max_orders:
             self._cleanup_old_orders_locked()
-            after = len(self._orders)
-        log.info(f"[OrderMgr] 手動清理：{before} → {after} 筆")
-        return before, after
+        self._orders[order.client_order_id] = order
+
+    def _cleanup_old_orders_locked(self) -> None:
+        terminal = {
+            OrderStatus.FILLED, OrderStatus.CANCELLED,
+            OrderStatus.REJECTED, OrderStatus.ERROR,
+        }
+        done = sorted(
+            [o for o in self._orders.values() if o.status in terminal],
+            key=lambda o: o.updated_at,
+        )
+        remove_n = max(1, len(done) // 2)
+        for o in done[:remove_n]:
+            del self._orders[o.client_order_id]
+        log.debug(f"[OM] 清理 {remove_n} 筆已終態訂單，剩餘 {len(self._orders)}")

@@ -1,5 +1,5 @@
 """
-quant_system/risk/kill_switch.py — 緊急停止開關（強化版 v2）
+quant_system/risk/kill_switch.py — 緊急停止開關（v3：多市場 + 評分引擎適配）
 
 ② 限價平倉優化：
    原本的「市價賣出」改為以下三種模式（CloseMode），解決低流動性幣種滑價問題：
@@ -7,19 +7,21 @@ quant_system/risk/kill_switch.py — 緊急停止開關（強化版 v2）
      "twap"        — 分 N 批次掛限價單，每批間隔 interval_sec 秒
      "market"      — 原始市價賣出（保留向後相容）
 
-   close_mode 可在 KillSwitch 建構時指定，或環境變數 KILL_CLOSE_MODE 覆蓋。
-
-trigger() 執行三步驟：
-  1. 撤銷所有幣種的掛單（cancel_open_orders）
-  2. 依 close_mode 平倉所有非 USDT 資產
-  3. 將 DB 中所有網格設為 STOPPED
+v3 新增：
+  ─ 適配多帳戶餘額結構（SPOT / FUTURES / MARGIN 三業務線）
+  ─ 新增 trigger_from_score()：由評分引擎觸發（附帶評分上下文）
+  ─ 新增 check_score_threshold()：自動判斷評分是否達到緊急停止條件
 
 使用方式：
   from quant_system.risk.kill_switch import get_kill_switch
 
   ks = get_kill_switch(db=db_instance, close_mode="limit_5pct")
 
-  # 觸發緊急停止（含 Binance 實際操作）
+  # 由評分引擎觸發（傳入 ScoreResult）
+  if score_result.final_score < -0.9:
+      ks.trigger_from_score(score_result, client=binance_client)
+
+  # 傳統觸發方式（不變）
   event = ks.trigger(client=binance_client, reason="回撤超過 15%")
 
   # 查詢狀態
@@ -160,6 +162,92 @@ class KillSwitch:
         return event
 
     # ── 解除暫停 ─────────────────────────────────────────────
+    def trigger_from_score(
+        self,
+        score_result,
+        client=None,
+        reason_prefix: str = "評分引擎觸發",
+    ) -> "KillEvent":
+        """
+        由多因子評分引擎觸發緊急停止。
+
+        score_result: ScoringEngine 回傳的 ScoreResult 物件。
+        自動從 ScoreResult 提取 symbol、final_score、skipped_factors
+        作為觸發原因的上下文資訊。
+        """
+        symbol      = getattr(score_result, "symbol", "UNKNOWN")
+        score       = getattr(score_result, "final_score", 0.0)
+        decision    = getattr(score_result, "decision", "HOLD")
+        skipped     = getattr(score_result, "skipped_factors", [])
+        reason = (
+            f"{reason_prefix} | symbol={symbol} "
+            f"decision={decision} score={score:.4f} "
+            f"skipped={skipped}"
+        )
+        return self.trigger(client=client, reason=reason)
+
+    def check_score_threshold(
+        self,
+        score_result,
+        panic_threshold: float = -0.85,
+    ) -> bool:
+        """
+        檢查評分是否達到緊急停止條件。
+        final_score < panic_threshold 時自動觸發。
+        回傳 True = 已觸發；False = 未達條件。
+
+        建議在每次評估後呼叫：
+            if ks.check_score_threshold(score_result):
+                ks.trigger_from_score(score_result, client=binance_client)
+        """
+        score = getattr(score_result, "final_score", 0.0)
+        if score < panic_threshold:
+            log.warning(
+                f"[KillSwitch] 評分觸及恐慌閾值 "
+                f"score={score:.4f} < threshold={panic_threshold}"
+            )
+            return True
+        return False
+
+    def get_multi_market_positions(self, clients: dict) -> dict:
+        """
+        查詢三業務線（SPOT / FUTURES / MARGIN）的持倉與餘額。
+
+        clients: {"SPOT": spot_client, "FUTURES": fut_client, "MARGIN": mgn_client}
+        回傳多帳戶餘額結構 dict。
+        """
+        positions = {}
+        for market, client in clients.items():
+            if client is None:
+                continue
+            try:
+                if market == "FUTURES":
+                    acc = client.get_futures_account()
+                    positions["FUTURES"] = {
+                        "balance": acc.get("totalWalletBalance", "0"),
+                        "unrealizedPnl": acc.get("totalUnrealizedProfit", "0"),
+                        "assets": acc.get("assets", []),
+                    }
+                elif market == "MARGIN":
+                    acc = client.get_margin_account()
+                    positions["MARGIN"] = {
+                        "marginLevel": acc.get("marginLevel", "0"),
+                        "totalNetAsset": acc.get("totalNetAssetOfBtc", "0"),
+                        "assets": acc.get("userAssets", []),
+                    }
+                else:  # SPOT
+                    acc = client.get_account()
+                    positions["SPOT"] = {
+                        "balances": [
+                            b for b in acc.get("balances", [])
+                            if float(b.get("free", 0)) + float(b.get("locked", 0)) > 0
+                        ]
+                    }
+            except Exception as e:
+                log.warning(f"[KillSwitch] {market} 帳戶查詢失敗: {e}")
+                positions[market] = {"error": str(e)}
+        return positions
+
     def reset(self) -> None:
         """解除暫停狀態（需人工確認後呼叫）。"""
         with self._lock:
