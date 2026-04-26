@@ -23,16 +23,27 @@ import sys
 import time
 from pathlib import Path
 
+# 強制將 stdout 與 stderr 轉為 utf-8 輸出，解決 Windows 終端機預設編碼的 UnicodeEncodeError
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
+
 ROOT_DIR         = Path(__file__).resolve().parent
 RUNTIME_DIR      = ROOT_DIR / "runtime"
 LOG_DIR          = ROOT_DIR / "logs"
 PID_FILE         = RUNTIME_DIR / "trading_bot.pid"
 UI_PID_FILE      = RUNTIME_DIR / "web_ui.pid"
 BOT_LOG          = LOG_DIR / "trading_bot.log"
+UI_LOG           = LOG_DIR / "web_ui.log"
 
 # ③ 優雅關閉等待秒數（讓 DB flush 完成）
 GRACEFUL_TIMEOUT = int(os.getenv("GRACEFUL_TIMEOUT", "45"))
 POLL_INTERVAL    = 0.5   # 輪詢進程是否已退出的間隔秒數
+
+RUN_ENV = os.environ.copy()
+RUN_ENV["PYTHONUTF8"] = "1"
+RUN_ENV["PYTHONIOENCODING"] = "utf-8"
 
 
 # ════════════════════════════════════════════════════════════
@@ -89,6 +100,7 @@ def start_bot() -> None:
                 cwd          = ROOT_DIR,
                 stdout       = lf,
                 stderr       = subprocess.STDOUT,
+                env          = RUN_ENV,
                 creationflags = (
                     subprocess.CREATE_NEW_PROCESS_GROUP
                     | subprocess.DETACHED_PROCESS
@@ -100,6 +112,7 @@ def start_bot() -> None:
                 cwd         = ROOT_DIR,
                 stdout      = lf,
                 stderr      = subprocess.STDOUT,
+                env         = RUN_ENV,
                 preexec_fn  = os.setsid,   # 新 session，避免 Ctrl+C 連帶終止
             )
 
@@ -187,24 +200,32 @@ def start_ui() -> int:
         return 0
 
     print("[UI] 啟動 → http://localhost:8000")
-    if os.name == "nt":
-        proc = subprocess.Popen(
-            [sys.executable, "web_ui.py"],
-            cwd=ROOT_DIR,
-            creationflags=(
-                subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.DETACHED_PROCESS
-            ),
-        )
-    else:
-        proc = subprocess.Popen(
-            [sys.executable, "web_ui.py"],
-            cwd=ROOT_DIR,
-            preexec_fn=os.setsid,
-        )
+    with UI_LOG.open("a", encoding="utf-8") as lf:
+        if os.name == "nt":
+            proc = subprocess.Popen(
+                [sys.executable, "web_ui.py"],
+                cwd=ROOT_DIR,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                env=RUN_ENV,
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.DETACHED_PROCESS
+                ),
+            )
+        else:
+            proc = subprocess.Popen(
+                [sys.executable, "web_ui.py"],
+                cwd=ROOT_DIR,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                env=RUN_ENV,
+                preexec_fn=os.setsid,
+            )
 
     _write_pid(proc.pid, UI_PID_FILE)
     print(f"[UI] Web UI 已啟動（背景），PID={proc.pid}")
+    print(f"[UI] 日誌：{UI_LOG}")
     return 0
 
 

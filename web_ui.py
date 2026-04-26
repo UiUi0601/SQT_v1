@@ -47,6 +47,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Security, WebSocket,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
@@ -110,8 +111,9 @@ def _signed_delete(path: str, params: dict | None = None) -> req.Response:
     return req.delete(url, headers={"X-MBX-APIKEY": _API_KEY}, timeout=10)
 
 # ── TradeDB 初始化（統一讀寫 trading_bot.db）────────────────
-trade_db = TradeDB()
-log.info("[DB] TradeDB（trading_bot.db）初始化完成")
+db_abs_path = str(Path(__file__).parent / "trading_bot.db")
+trade_db = TradeDB(db_path=db_abs_path)
+log.info(f"[DB] TradeDB 初始化完成，路徑: {db_abs_path}")
 
 # ── Telegram 推播（網格事件）────────────────────────────────
 try:
@@ -146,6 +148,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── 掛載靜態檔案 ──────────────────────────────────────────────
+static_dir = Path(__file__).parent / "static"
+static_dir.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 # ── 手續費設定 ────────────────────────────────────────────────
@@ -469,6 +476,8 @@ async def grid_status():
         running_cfgs = [c for c in configs if c.get("status") == "RUNNING"]
         last_cfg = running_cfgs[-1] if running_cfgs else configs[-1]
 
+    log.info(f"[API] /api/grid_status 讀取設定數量: {len(configs)}, running={running}, last_cfg_id={last_cfg['id'] if last_cfg else None}")
+
     return {
         "running":     running,
         "last_config": last_cfg,
@@ -627,7 +636,9 @@ async def get_history(limit: int = Query(8, ge=1, le=50)):
         key=lambda c: c.get("created_at") or "",
         reverse=True,
     )
-    return configs_sorted[:limit]
+    result = configs_sorted[:limit]
+    log.info(f"[API] /api/history 回傳 {len(result)} 筆歷史紀錄 (總筆數: {len(configs)})")
+    return result
 
 
 # ══ ★ 帳戶餘額 ════════════════════════════════════════════════
