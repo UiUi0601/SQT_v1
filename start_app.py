@@ -2,14 +2,16 @@
 start_app.py — AQT_v1 啟動腳本（優雅關閉強化版）
 
 用法：
-  python start_app.py               # 背景啟動機器人 + 前景啟動 Web UI
+  python start_app.py               # 背景啟動機器人 + 背景啟動 Web UI
   python start_app.py start-bot     # 只啟動機器人（背景）
   python start_app.py stop-bot      # 優雅停止機器人
   python start_app.py restart-bot   # 重啟機器人（stop + start）
-  python start_app.py start-ui      # 只啟動 Web UI（http://localhost:8000）
-  python start_app.py status        # 查看機器人狀態
+  python start_app.py start-ui      # 只啟動 Web UI（背景）
+  python start_app.py stop-ui       # 優雅停止 Web UI
+  python start_app.py stop-all      # 停止機器人與 Web UI
+  python start_app.py status        # 查看機器人與 Web UI 狀態
 
-③ 優雅關閉流程（stop-bot）：
+③ 優雅關閉流程（stop-bot / stop-ui）：
   1. 發送 SIGTERM → 主迴圈設 _is_running=False，跑完當前 tick 後退出
   2. 等待最多 GRACEFUL_TIMEOUT 秒讓進程自行退出
   3. 若超時，改發 SIGKILL 強制終止（保底措施）
@@ -25,6 +27,7 @@ ROOT_DIR         = Path(__file__).resolve().parent
 RUNTIME_DIR      = ROOT_DIR / "runtime"
 LOG_DIR          = ROOT_DIR / "logs"
 PID_FILE         = RUNTIME_DIR / "trading_bot.pid"
+UI_PID_FILE      = RUNTIME_DIR / "web_ui.pid"
 BOT_LOG          = LOG_DIR / "trading_bot.log"
 
 # ③ 優雅關閉等待秒數（讓 DB flush 完成）
@@ -43,16 +46,18 @@ def _is_running(pid: int) -> bool:
         return False
 
 
-def _read_pid() -> int | None:
-    if not PID_FILE.exists():
+def _read_pid(file_path: Path = None) -> int | None:
+    path = file_path or PID_FILE
+    if not path.exists():
         return None
-    txt = PID_FILE.read_text().strip()
+    txt = path.read_text().strip()
     return int(txt) if txt.isdigit() else None
 
 
-def _write_pid(pid: int) -> None:
+def _write_pid(pid: int, file_path: Path = None) -> None:
+    path = file_path or PID_FILE
     RUNTIME_DIR.mkdir(exist_ok=True)
-    PID_FILE.write_text(str(pid))
+    path.write_text(str(pid))
 
 
 def _wait_for_exit(pid: int, timeout: float) -> bool:
@@ -176,23 +181,101 @@ def restart_bot() -> None:
 
 
 def start_ui() -> int:
+    pid = _read_pid(UI_PID_FILE)
+    if pid and _is_running(pid):
+        print(f"[UI] 已在執行中，PID={pid}")
+        return 0
+
     print("[UI] 啟動 → http://localhost:8000")
-    return subprocess.call(
-        [sys.executable, "web_ui.py"],
-        cwd=ROOT_DIR
-    )
+    if os.name == "nt":
+        proc = subprocess.Popen(
+            [sys.executable, "web_ui.py"],
+            cwd=ROOT_DIR,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.DETACHED_PROCESS
+            ),
+        )
+    else:
+        proc = subprocess.Popen(
+            [sys.executable, "web_ui.py"],
+            cwd=ROOT_DIR,
+            preexec_fn=os.setsid,
+        )
+
+    _write_pid(proc.pid, UI_PID_FILE)
+    print(f"[UI] Web UI 已啟動（背景），PID={proc.pid}")
+    return 0
+
+
+def stop_ui(force: bool = False) -> bool:
+    """優雅停止 Web UI。"""
+    pid = _read_pid(UI_PID_FILE)
+    if not pid:
+        print("[UI] 找不到 PID 檔案，Web UI 可能未啟動")
+        return True
+    if not _is_running(pid):
+        print(f"[UI] PID {pid} 已停止")
+        UI_PID_FILE.unlink(missing_ok=True)
+        return True
+
+    print(f"[UI] 發送 SIGTERM 至 PID={pid}，等待優雅退出（最多 {GRACEFUL_TIMEOUT}s）...")
+    try:
+        if os.name == "nt":
+            os.kill(pid, signal.SIGTERM)
+        else:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        print(f"[UI] PID {pid} 不存在（可能已自行退出）")
+        UI_PID_FILE.unlink(missing_ok=True)
+        return True
+    except PermissionError as e:
+        print(f"[UI] 無權限發送訊號: {e}")
+        return False
+
+    exited = _wait_for_exit(pid, timeout=GRACEFUL_TIMEOUT)
+    if exited:
+        print(f"[UI] ✅ 已優雅退出（PID={pid}）")
+        UI_PID_FILE.unlink(missing_ok=True)
+        return True
+
+    if force or os.name == "nt":
+        print(f"[UI] ⚠ 超時（{GRACEFUL_TIMEOUT}s），改用 SIGKILL 強制終止...")
+        try:
+            if os.name == "nt":
+                os.kill(pid, signal.SIGTERM)
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            if _wait_for_exit(pid, timeout=5.0):
+                print(f"[UI] 已強制終止，PID={pid}")
+                UI_PID_FILE.unlink(missing_ok=True)
+                return True
+        except Exception as e:
+            print(f"[UI] SIGKILL 失敗: {e}")
+        return False
+    else:
+        print(f"[UI] ⚠ 進程 {pid} 未退出。如需強制終止請加上 --force")
+        return False
 
 
 def show_status() -> None:
-    pid = _read_pid()
-    if not pid:
+    bot_pid = _read_pid(PID_FILE)
+    if not bot_pid:
         print("[Bot] 未啟動")
-        return
-    running = _is_running(pid)
-    icon    = "✅ 執行中" if running else "❌ 已停止"
-    print(f"[Bot] {icon}，PID={pid}")
-    if running:
-        print(f"[Bot] 日誌：{BOT_LOG}")
+    else:
+        running = _is_running(bot_pid)
+        icon    = "✅ 執行中" if running else "❌ 已停止"
+        print(f"[Bot] {icon}，PID={bot_pid}")
+        if running:
+            print(f"[Bot] 日誌：{BOT_LOG}")
+
+    ui_pid = _read_pid(UI_PID_FILE)
+    if not ui_pid:
+        print("[UI] 未啟動")
+    else:
+        running = _is_running(ui_pid)
+        icon    = "✅ 執行中" if running else "❌ 已停止"
+        print(f"[UI] {icon}，PID={ui_pid}")
 
 
 # ════════════════════════════════════════════════════════════
@@ -202,21 +285,39 @@ def main() -> int:
     args = sys.argv[1:]
     cmd  = args[0].strip().lower() if args else "start-all"
     opts = set(args[1:])
+    force = "--force" in opts
 
     if cmd == "start-all":
-        start_bot()
-        return start_ui()
+        # 檢查並啟動 Bot
+        bot_pid = _read_pid(PID_FILE)
+        if bot_pid and _is_running(bot_pid):
+            print(f"[Bot] 已在執行中，PID={bot_pid}")
+        else:
+            start_bot()
+            
+        # 檢查並啟動 UI
+        ui_pid = _read_pid(UI_PID_FILE)
+        if ui_pid and _is_running(ui_pid):
+            print(f"[UI] 已在執行中，PID={ui_pid}")
+        else:
+            start_ui()
+        return 0
     elif cmd == "start-bot":
         start_bot()
         return 0
     elif cmd == "stop-bot":
-        force = "--force" in opts
         return 0 if stop_bot(force=force) else 1
     elif cmd == "restart-bot":
         restart_bot()
         return 0
     elif cmd == "start-ui":
         return start_ui()
+    elif cmd == "stop-ui":
+        return 0 if stop_ui(force=force) else 1
+    elif cmd == "stop-all":
+        bot_stopped = stop_bot(force=force)
+        ui_stopped = stop_ui(force=force)
+        return 0 if (bot_stopped and ui_stopped) else 1
     elif cmd == "status":
         show_status()
         return 0
