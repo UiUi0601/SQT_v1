@@ -1,0 +1,120 @@
+# deploy/docker-compose.yml — AQT_v1 容器編排
+#
+# 啟動（背景）：
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# 停止（優雅）：
+#   docker compose -f deploy/docker-compose.yml stop
+#
+# 查看日誌：
+#   docker compose -f deploy/docker-compose.yml logs -f aqt_bot
+#
+# 重啟機器人（不重啟 UI）：
+#   docker compose -f deploy/docker-compose.yml restart aqt_bot
+
+services:
+
+  # ── 量化機器人 ────────────────────────────────────────────
+  aqt_bot:
+    build:
+      context: ..        # 專案根目錄（Dockerfile 在 deploy/ 下）
+      dockerfile: deploy/Dockerfile
+    image: aqt_v1:latest
+    container_name: aqt_v1_bot
+
+    # ③ 優雅關閉：docker stop 發送 SIGTERM，等 stop_grace_period 後 SIGKILL
+    stop_signal: SIGTERM
+    stop_grace_period: 60s     # 給 DB flush 60 秒
+
+    # ② OOM / 崩潰 / 異常退出 自動重啟
+    restart: unless-stopped
+
+    # 環境變數（從 .env 載入，不寫入 image）
+    env_file:
+      - ../.env
+    environment:
+      - DB_PATH=/app/data/trading_bot.db
+      - LOG_DIR=/app/logs
+      - BOT_VERSION=grid
+      - TZ=UTC                  # ④ 容器內強制 UTC，避免時區差異
+
+    # Volume：資料與日誌持久化（容器重啟不遺失）
+    volumes:
+      - aqt_data:/app/data      # SQLite DB
+      - aqt_logs:/app/logs      # 日誌
+      - aqt_runtime:/app/runtime  # PID 檔案等執行時狀態
+
+    # 資源限制（防 OOM 無限消耗）
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.5"
+        reservations:
+          memory: 256m
+
+    # 健康檢查（與 Dockerfile HEALTHCHECK 一致）
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "run_bot.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+    # 網路：僅需對外連接 Binance API（無需暴露 port）
+    networks:
+      - aqt_net
+
+    # 日誌驅動：限制大小避免磁碟爆滿
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ── Streamlit UI（可選）─────────────────────────────────
+  aqt_ui:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: aqt_v1:latest
+    container_name: aqt_v1_ui
+    command: ["python", "-m", "streamlit", "run", "test.py",
+              "--server.port=8501", "--server.headless=true"]
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - DB_PATH=/app/data/trading_bot.db
+      - TZ=Asia/Taipei           # UI 顯示台灣時間
+    ports:
+      - "8501:8501"
+    volumes:
+      - aqt_data:/app/data:ro   # UI 只讀取 DB，不寫入
+      - aqt_logs:/app/logs:ro
+    networks:
+      - aqt_net
+    depends_on:
+      aqt_bot:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+
+# ── 具名 Volume（跨容器共享）─────────────────────────────
+volumes:
+  aqt_data:
+    driver: local
+  aqt_logs:
+    driver: local
+  aqt_runtime:
+    driver: local
+
+
+# ── 內部網路 ──────────────────────────────────────────────
+networks:
+  aqt_net:
+    driver: bridge

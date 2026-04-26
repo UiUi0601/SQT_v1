@@ -1,0 +1,59 @@
+# deploy/.dockerignore — 排除不應進入 Docker 映像的敏感/無用檔案
+#
+# ⚠ .env 絕對不能進入映像，金鑰必須用 --env-file 或 docker secret 注入
+
+# 環境與金鑰
+.env
+.env.*
+*.pem
+*.key
+
+# 資料與日誌（透過 volume 掛載）
+*.db
+*.db-wal
+*.db-shm
+data/
+logs/
+runtime/
+
+# Python 暫存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虛擬環境
+venv/
+.venv/
+env/
+.env_dir/
+
+# 測試與開發
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.cover
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# macOS
+.DS_Store
+
+# 文件（不需要進入 image）
+*.md
+docs/

@@ -1,0 +1,79 @@
+# deploy/aqt_v1.service — AQT_v1 systemd 服務單元
+#
+# 安裝步驟：
+#   1. 複製到 systemd 目錄：
+#      sudo cp deploy/aqt_v1.service /etc/systemd/system/
+#   2. 重新載入配置：
+#      sudo systemctl daemon-reload
+#   3. 啟用開機自動啟動：
+#      sudo systemctl enable aqt_v1
+#   4. 立即啟動：
+#      sudo systemctl start aqt_v1
+#
+# 常用管理指令：
+#   sudo systemctl stop    aqt_v1     # 優雅停止（傳送 SIGTERM）
+#   sudo systemctl restart aqt_v1     # 重啟
+#   sudo systemctl status  aqt_v1     # 查看狀態
+#   journalctl -u aqt_v1 -f           # 即時查看日誌
+#
+# 注意：
+#   - 請將 User/Group 改為實際執行帳戶（非 root）
+#   - 請將 WorkingDirectory 改為 AQT_v1 的實際路徑
+#   - 金鑰存放在 .env 並由 EnvironmentFile= 載入，切勿明文寫在此檔
+
+[Unit]
+Description=AQT_v1 Crypto Grid Trading Bot
+Documentation=https://github.com/your-org/aqt_v1
+After=network-online.target
+Wants=network-online.target
+# 若有 NTP 服務確保時間同步再啟動
+After=time-sync.target
+
+[Service]
+# ── 執行身分（請修改為實際帳戶）────────────────────────────
+Type=simple
+User=aqt
+Group=aqt
+
+# ── 工作目錄（請修改為實際路徑）────────────────────────────
+WorkingDirectory=/opt/aqt_v1
+
+# ── 環境變數（從 .env 載入，避免明文金鑰）──────────────────
+EnvironmentFile=/opt/aqt_v1/.env
+
+# ── 啟動指令 ────────────────────────────────────────────────
+ExecStart=/opt/aqt_v1/venv/bin/python run_bot.py
+
+# ── 優雅關閉（③ 配合 SIGTERM handler）─────────────────────
+# systemctl stop 時先送 SIGTERM，等待 TimeoutStopSec 後再 SIGKILL
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=60        # 給 DB flush 最多 60 秒
+FinalKillSignal=SIGKILL  # 60 秒後保底強制終止
+
+# ── 自動重啟（OOM / 崩潰 / 異常退出 都重啟）───────────────
+Restart=on-failure
+RestartSec=15            # 重啟前等待 15 秒（避免快速循環崩潰消耗資源）
+StartLimitIntervalSec=300
+StartLimitBurst=5        # 5 分鐘內最多重啟 5 次，超過則停止嘗試
+
+# ── 資源保護 ────────────────────────────────────────────────
+# 防止 OOM 被 kernel 直接 kill（調高 OOM score 避免優先被殺）
+OOMScoreAdjust=-500
+# 記憶體上限（超過則 systemd 主動重啟，比等 OOM killer 更可控）
+MemoryMax=2G
+# CPU 配額：允許最多 150%（雙核）
+CPUQuota=150%
+
+# ── 安全強化 ────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+# ── 日誌 ────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aqt_v1
+
+[Install]
+WantedBy=multi-user.target

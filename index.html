@@ -1,0 +1,1932 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AQT — 動態網格交易控制台 v6</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    /* ════ 設計變數 ════ */
+    :root {
+      --bg:      #0d1117;
+      --card:    #161b22;
+      --hover:   #21262d;
+      --border:  #30363d;
+      --text:    #e6edf3;
+      --muted:   #8b949e;
+      --upper:   #f97316;
+      --lower:   #22c55e;
+      --sell:    #f85149;
+      --accent:  #58a6ff;
+      --purple:  #a371f7;
+      --gold:    #e3b341;
+      --aside-w: 310px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      display: flex; flex-direction: column; user-select: none;
+    }
+
+    /* ════ Header ════ */
+    header {
+      background: var(--card); border-bottom: 1px solid var(--border);
+      height: 50px; padding: 0 14px;
+      display: flex; align-items: center; gap: 8px;
+      flex-shrink: 0; z-index: 100;
+    }
+    .logo { font-size: 14px; font-weight: 900; color: var(--accent); letter-spacing: 2px; white-space: nowrap; }
+    .hdr-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+    select {
+      background: var(--hover); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 8px; font-size: 12px; font-weight: 600;
+      cursor: pointer; outline: none; height: 28px;
+    }
+    select:focus { border-color: var(--accent); }
+    .live-px {
+      font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
+      transition: color .2s; white-space: nowrap;
+    }
+    .live-px.up   { color: var(--lower); }
+    .live-px.down { color: var(--sell); }
+    .live-px.flat { color: var(--text); }
+    .badge {
+      font-size: 11px; font-weight: 700; padding: 2px 7px;
+      border-radius: 5px; white-space: nowrap;
+    }
+    .badge.up   { background: rgba(34,197,94,.15);  color: var(--lower); }
+    .badge.down { background: rgba(248,81,73,.15);   color: var(--sell); }
+    .hdr-stat { font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .hdr-stat span { color: var(--text); font-weight: 600; }
+    .bot-pill {
+      display: flex; align-items: center; gap: 5px;
+      background: var(--hover); border: 1px solid var(--border);
+      border-radius: 20px; padding: 3px 9px; font-size: 11px; font-weight: 600; white-space: nowrap;
+    }
+    .bot-pill-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background .3s; }
+    .bot-pill.running { border-color: var(--lower); }
+    .bot-pill.running .bot-pill-dot { background: var(--lower); animation: pulse 2s infinite; }
+    .balance-card {
+      display: flex; align-items: center; gap: 4px;
+      background: var(--hover); border: 1px solid var(--border);
+      border-radius: 16px; padding: 3px 9px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--muted);
+    }
+    .balance-card .bal-val { color: var(--lower); }
+    .latency-card {
+      display: flex; align-items: center; gap: 4px;
+      font-size: 10px; color: var(--muted); white-space: nowrap;
+    }
+    #latency-val { font-weight: 700; }
+    .ws-status { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background .3s; }
+    .ws-status.ok   .ws-dot { background: var(--lower); animation: pulse 2s infinite; }
+    .ws-status.warn .ws-dot { background: #f59e0b; }
+    .ws-status.err  .ws-dot { background: var(--sell); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+    .hdr-spacer { flex: 1; }
+
+    /* ════ Main Layout ════ */
+    main { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+
+    /* Chart Column */
+    #chart-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+    #chart-wrapper { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+    #chart { width: 100%; height: 100%; }
+
+    /* OHLCV Legend */
+    #chart-legend {
+      position: absolute; top: 6px; left: 8px;
+      display: flex; gap: 10px; align-items: center;
+      font-size: 11px; font-variant-numeric: tabular-nums;
+      background: rgba(13,17,23,.75); padding: 3px 8px; border-radius: 5px;
+      pointer-events: none; z-index: 10; opacity: 0; transition: opacity .2s;
+    }
+    #chart-legend.show { opacity: 1; }
+    .leg-item { display: flex; gap: 3px; }
+    .leg-lbl { color: var(--muted); }
+    .leg-val { font-weight: 700; }
+
+    /* Interval bar (floating) */
+    .interval-bar {
+      position: absolute; top: 6px; right: 8px;
+      display: flex; gap: 2px; z-index: 10;
+    }
+    .interval-btn {
+      padding: 2px 7px; font-size: 10px; font-weight: 700;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: rgba(13,17,23,.88); color: var(--muted);
+      cursor: pointer; transition: all .12s;
+    }
+    .interval-btn:hover  { border-color: var(--accent); color: var(--accent); }
+    .interval-btn.active { background: var(--accent); border-color: var(--accent); color: #000; }
+
+    /* Click-to-set banner */
+    #click-set-banner {
+      position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+      background: rgba(88,166,255,.15); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 5px 14px; font-size: 11px; font-weight: 700;
+      color: var(--accent); z-index: 12; white-space: nowrap; pointer-events: none;
+    }
+
+    /* Loading spinner */
+    #chart-loading {
+      position: absolute; inset: 0; background: rgba(13,17,23,.8);
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      font-size: 13px; color: var(--muted); pointer-events: none; z-index: 20;
+      opacity: 0; transition: opacity .2s;
+    }
+    #chart-loading.show { opacity: 1; }
+    .spin { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ════ Log Terminal ════ */
+    #log-panel {
+      height: 160px; flex-shrink: 0;
+      background: #0a0c10; border-top: 1px solid var(--border);
+      display: flex; flex-direction: column;
+    }
+    .log-header {
+      display: flex; align-items: center; padding: 4px 10px; gap: 8px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--card);
+    }
+    .log-title { font-size: 10px; font-weight: 700; color: var(--muted); }
+    .log-toggle { margin-left: auto; font-size: 10px; background: transparent; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); padding: 1px 7px; cursor: pointer; }
+    .log-toggle:hover { border-color: var(--accent); color: var(--accent); }
+    #log-body {
+      flex: 1; overflow-y: auto; padding: 4px 8px;
+      font-family: 'Cascadia Code','Consolas','Courier New', monospace;
+      font-size: 10px; line-height: 1.6;
+    }
+    .log-line { color: #8b949e; white-space: pre-wrap; word-break: break-all; }
+    .log-line.l-err  { color: #f85149; }
+    .log-line.l-warn { color: #e3b341; }
+    .log-line.l-ok   { color: #22c55e; }
+    #log-body::-webkit-scrollbar { width: 3px; }
+    #log-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    #log-panel.collapsed { height: 30px; }
+    #log-panel.collapsed #log-body { display: none; }
+
+    /* ════ Orders Panel ════ */
+    #orders-panel {
+      height: 190px; flex-shrink: 0;
+      background: var(--card); border-top: 1px solid var(--border);
+      display: flex; flex-direction: column;
+    }
+    .orders-header {
+      display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .orders-header-title { font-size: 11px; font-weight: 700; }
+    .orders-tabs { display: flex; gap: 2px; }
+    .orders-tab {
+      padding: 1px 8px; font-size: 10px; font-weight: 700;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: transparent; color: var(--muted); cursor: pointer; transition: all .12s;
+    }
+    .orders-tab.active { background: var(--accent); border-color: var(--accent); color: #000; }
+    .orders-body { flex: 1; overflow: auto; }
+    .ord-balance { margin-left: auto; font-size: 11px; }
+    .ord-balance .bal { color: var(--lower); font-weight: 700; }
+    .orders-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    .orders-table th {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .5px;
+      color: var(--muted); padding: 3px 8px; text-align: left;
+      border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card);
+    }
+    .orders-table td { padding: 4px 8px; border-bottom: 1px solid rgba(48,54,61,.35); }
+    .orders-table tbody tr:hover td { background: var(--hover); }
+
+    /* ════ Aside ════ */
+    aside {
+      width: var(--aside-w); flex-shrink: 0;
+      background: var(--card); border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .tab {
+      flex: 1; padding: 8px 2px; font-size: 10px; font-weight: 700;
+      text-align: center; cursor: pointer; color: var(--muted);
+      border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap;
+    }
+    .tab:hover { color: var(--text); background: var(--hover); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--bg); }
+    .tab-panel { display: none; flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px; }
+    .tab-panel.active { display: flex; flex-direction: column; gap: 10px; }
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ════ Common Components ════ */
+    .sec-title {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px;
+      color: var(--muted); padding-bottom: 7px; border-bottom: 1px solid var(--border);
+    }
+    .indicator-row { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 8px; }
+    .ind-box { background: var(--bg); border-radius: 6px; padding: 6px 8px; }
+    .ind-lbl { font-size: 9px; color: var(--muted); margin-bottom: 2px; }
+    .ind-val { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .regime-badge { display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: .8px; padding: 2px 8px; border-radius: 10px; }
+    .regime-RANGING  { background: rgba(88,166,255,.15); color: var(--accent); }
+    .regime-TRENDING { background: rgba(163,113,247,.15); color: var(--purple); }
+    .regime-HIGH_VOL { background: rgba(248,81,73,.15);   color: var(--sell); }
+
+    /* Strategy Cards */
+    .strategy-card {
+      border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; margin-top: 6px;
+      background: var(--hover); transition: border-color .15s;
+    }
+    .strategy-card:hover { border-color: var(--accent); }
+    .sc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .sc-name { font-size: 12px; font-weight: 800; }
+    .sc-desc { font-size: 10px; color: var(--muted); margin-bottom: 5px; }
+    .sc-vals { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; font-size: 10px; }
+    .sc-item { display: flex; justify-content: space-between; gap: 4px; }
+    .sc-lbl { color: var(--muted); }
+    .sc-val { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .btn-apply {
+      font-size: 10px; font-weight: 700; padding: 3px 9px;
+      border: 1px solid var(--accent); border-radius: 12px; background: transparent; color: var(--accent);
+      cursor: pointer; transition: all .15s; white-space: nowrap;
+    }
+    .btn-apply:hover { background: var(--accent); color: #000; }
+
+    /* Line Cards */
+    .line-card {
+      border: 1px solid var(--border); border-left: 3px solid transparent;
+      border-radius: 8px; padding: 9px 10px; background: var(--hover);
+    }
+    .line-card.upper { border-left-color: var(--upper); }
+    .line-card.lower { border-left-color: var(--lower); }
+    .line-card.stoploss { border-left-color: var(--sell); }
+    .lc-head { font-size: 10px; color: var(--muted); display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+    .lc-dot  { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .lc-price { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .lc-price.upper   { color: var(--upper); }
+    .lc-price.lower   { color: var(--lower); }
+    .lc-price.stoploss{ color: var(--sell); }
+    .lc-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); padding: 4px 8px;
+      font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+      text-align: right; margin-top: 6px;
+    }
+    .lc-input:focus { outline: none; border-color: var(--accent); }
+    .lc-hint { font-size: 9px; color: var(--muted); margin-top: 2px; }
+
+    /* Stat Grid */
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .stat-box  { background: var(--bg); border-radius: 6px; padding: 6px 8px; }
+    .stat-lbl  { font-size: 9px; color: var(--muted); margin-bottom: 2px; }
+    .stat-val  { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    /* Config Rows */
+    .cfg-row { display: flex; align-items: center; justify-content: space-between; padding: 3px 0; }
+    .cfg-row label { font-size: 12px; color: var(--muted); }
+    .cfg-row select, .cfg-row input { width: 115px; font-size: 12px; padding: 3px 8px; height: 26px; }
+    .cfg-row input[type="number"] {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); text-align: right;
+    }
+    .cfg-row input[type="number"]:focus { outline: none; border-color: var(--accent); }
+
+    /* Calc qty row */
+    .calc-qty-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 2px 0; font-size: 10px; color: var(--muted);
+    }
+    .calc-qty-val { color: var(--accent); font-weight: 700; font-size: 11px; }
+
+    /* Bot Status */
+    .bot-status-row {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--bg); border-radius: 8px; padding: 9px 10px;
+    }
+    .bot-status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background .3s; }
+    .bot-status-dot.running { background: var(--lower); animation: pulse 2s infinite; }
+    .bot-status-text { font-size: 13px; font-weight: 700; }
+    .bot-status-text.running { color: var(--lower); }
+    .bot-status-text.stopped { color: var(--muted); }
+
+    /* Trade Mode */
+    input[type="radio"][name="trade-mode"] { display: none; }
+    .mode-card {
+      border: 1px solid var(--border); border-radius: 8px; padding: 8px 7px;
+      background: var(--hover); text-align: center; transition: border-color .15s, background .15s; cursor: pointer;
+    }
+    .mode-card:hover { border-color: var(--accent); }
+
+    /* Fee Warning */
+    .fee-warn { border-radius: 7px; padding: 7px 10px; font-size: 11px; line-height: 1.5; margin-top: 4px; display: none; }
+    .fee-warn.yellow { background: rgba(227,179,65,.12); border: 1px solid rgba(227,179,65,.4); color: var(--gold); }
+    .fee-warn.red    { background: rgba(248,81,73,.10);  border: 1px solid rgba(248,81,73,.4);  color: var(--sell); }
+
+    /* Buttons */
+    .btn-start {
+      width: 100%; padding: 10px; background: var(--accent); color: #000;
+      border: none; border-radius: 8px; font-size: 13px; font-weight: 800; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 6px; transition: opacity .15s, transform .1s;
+    }
+    .btn-start:hover { opacity: .85; }
+    .btn-start:active { transform: scale(.98); }
+    .btn-start:disabled { opacity: .35; cursor: not-allowed; transform: none; }
+    .btn-stop {
+      width: 100%; padding: 9px; background: transparent;
+      border: 1px solid var(--sell); border-radius: 8px;
+      color: var(--sell); font-size: 12px; font-weight: 700;
+      cursor: pointer; transition: all .15s; display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .btn-stop:hover { background: rgba(248,81,73,.12); }
+    .btn-kill {
+      width: 100%; padding: 9px; background: rgba(248,81,73,.1);
+      border: 1px solid var(--sell); border-radius: 8px;
+      color: var(--sell); font-size: 12px; font-weight: 800;
+      cursor: pointer; transition: all .15s; letter-spacing: .5px;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .btn-kill:hover { background: rgba(248,81,73,.25); }
+    .btn-row { display: flex; flex-direction: column; gap: 6px; }
+
+    /* Click-to-Set Btn */
+    .btn-click-set {
+      width: 100%; padding: 7px; background: rgba(88,166,255,.08);
+      border: 1px solid rgba(88,166,255,.4); border-radius: 7px;
+      color: var(--accent); font-size: 11px; font-weight: 700;
+      cursor: pointer; transition: all .15s; display: flex; align-items: center; justify-content: center; gap: 5px;
+    }
+    .btn-click-set:hover { background: rgba(88,166,255,.15); }
+    .btn-click-set.active { background: var(--accent); color: #000; }
+
+    /* History Table */
+    table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    th {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .6px;
+      color: var(--muted); padding: 3px 3px 5px; text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 4px 3px; border-bottom: 1px solid var(--hover); color: var(--muted); font-variant-numeric: tabular-nums; }
+    tbody tr:hover td { background: var(--hover); color: var(--text); }
+
+    /* Suggest Loading */
+    .suggest-loading { text-align: center; color: var(--muted); font-size: 11px; padding: 14px 0; }
+
+    /* Wallet Panel */
+    .wallet-asset-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 5px 8px; border-radius: 6px; background: var(--bg); margin-bottom: 3px;
+    }
+    .wallet-asset-name { font-size: 12px; font-weight: 700; }
+    .wallet-asset-qty  { font-size: 10px; color: var(--muted); }
+    .wallet-asset-val  { font-size: 11px; font-weight: 700; color: var(--lower); }
+
+    /* ════ Toast Notifications ════ */
+    #toast-container {
+      position: fixed; bottom: 20px; right: 20px;
+      display: flex; flex-direction: column; gap: 8px; z-index: 9999;
+      pointer-events: none;
+    }
+    .toast {
+      min-width: 240px; max-width: 360px; padding: 10px 14px;
+      border-radius: 8px; font-size: 12px; font-weight: 600; line-height: 1.4;
+      opacity: 0; transform: translateX(20px); transition: all .25s ease;
+      pointer-events: auto; cursor: pointer; border: 1px solid transparent;
+    }
+    .toast.show { opacity: 1; transform: translateX(0); }
+    .toast-success { background: rgba(34,197,94,.12);  border-color: rgba(34,197,94,.4);  color: var(--lower); }
+    .toast-error   { background: rgba(248,81,73,.12);  border-color: rgba(248,81,73,.4);  color: var(--sell); }
+    .toast-info    { background: rgba(88,166,255,.12); border-color: rgba(88,166,255,.4); color: var(--accent); }
+    .toast-warn    { background: rgba(227,179,65,.12); border-color: rgba(227,179,65,.4); color: var(--gold); }
+
+    /* ════ Modal Dialog ════ */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.65);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 10000; opacity: 0; pointer-events: none; transition: opacity .2s;
+    }
+    .modal-overlay.show { opacity: 1; pointer-events: all; }
+    .modal {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px; min-width: 320px; max-width: 420px; width: 90%;
+      transform: scale(.95); transition: transform .2s;
+    }
+    .modal-overlay.show .modal { transform: scale(1); }
+    .modal-title { font-size: 15px; font-weight: 800; margin-bottom: 10px; }
+    .modal-message { font-size: 12px; color: var(--muted); margin-bottom: 18px; line-height: 1.6; }
+    .modal-btns { display: flex; gap: 8px; justify-content: flex-end; }
+    .modal-btn {
+      padding: 8px 18px; border-radius: 7px; font-size: 12px; font-weight: 700;
+      cursor: pointer; transition: all .15s; border: 1px solid var(--border);
+      background: transparent; color: var(--text);
+    }
+    .modal-btn:hover { background: var(--hover); }
+    .modal-btn.primary { background: var(--accent); border-color: var(--accent); color: #000; }
+    .modal-btn.primary:hover { opacity: .85; }
+    .modal-btn.danger  { background: var(--sell);   border-color: var(--sell);   color: #fff; }
+    .modal-btn.danger:hover { opacity: .85; }
+
+    /* Login Modal */
+    #login-overlay .modal { max-width: 340px; }
+    #login-token-inp {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 7px; color: var(--text); padding: 8px 10px;
+      font-size: 13px; margin-bottom: 12px;
+    }
+    #login-token-inp:focus { outline: none; border-color: var(--accent); }
+    #login-err { font-size: 11px; color: var(--sell); min-height: 16px; text-align: center; margin-top: 8px; }
+  </style>
+</head>
+<body>
+
+<!-- ════ 登入 Modal ════ -->
+<div id="login-overlay" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-title">🔐 存取驗證</div>
+    <div class="modal-message">請輸入控制台存取 Token（CONSOLE_TOKEN）以繼續。</div>
+    <input type="password" id="login-token-inp" placeholder="輸入 Token…"
+           onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="modal-btn primary" style="width:100%" onclick="doLogin()">登入</button>
+    <div id="login-err"></div>
+  </div>
+</div>
+
+<!-- ════ 確認 Modal ════ -->
+<div id="modal-overlay" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-title" id="modal-title"></div>
+    <div class="modal-message" id="modal-message"></div>
+    <div class="modal-btns">
+      <button class="modal-btn" onclick="closeModal()">取消</button>
+      <button class="modal-btn primary" id="modal-confirm-btn">確認</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ Toast Container ════ -->
+<div id="toast-container"></div>
+
+<!-- ════ Header ════ -->
+<header>
+  <div class="logo">⚡ AQT</div>
+  <div class="hdr-sep"></div>
+
+  <select id="sel-symbol" onchange="onSymbolChange()">
+    <option value="BTCUSDT">BTCUSDT</option>
+    <option value="ETHUSDT">ETHUSDT</option>
+    <option value="SOLUSDT">SOLUSDT</option>
+    <option value="BNBUSDT">BNBUSDT</option>
+    <option value="XRPUSDT">XRPUSDT</option>
+    <option value="DOGEUSDT">DOGEUSDT</option>
+    <option value="ADAUSDT">ADAUSDT</option>
+    <option value="AVAXUSDT">AVAXUSDT</option>
+  </select>
+
+  <div class="hdr-sep"></div>
+  <div class="live-px flat" id="live-px">$---,---</div>
+  <div class="badge" id="badge-change" style="display:none"></div>
+  <div class="hdr-stat" id="hdr-high" style="display:none">H: <span>--</span></div>
+  <div class="hdr-stat" id="hdr-low"  style="display:none">L: <span>--</span></div>
+
+  <div class="hdr-spacer"></div>
+
+  <div class="bot-pill" id="bot-pill">
+    <div class="bot-pill-dot"></div>
+    <span id="bot-pill-text">未啟動</span>
+  </div>
+
+  <div class="balance-card" id="balance-card" title="可用 USDT">
+    💰 <span class="bal-val" id="balance-val">--</span> USDT
+  </div>
+
+  <div class="latency-card">
+    📡 <span id="latency-val" style="color:var(--muted)">--ms</span>
+  </div>
+
+  <div class="ws-status" id="ws-status">
+    <div class="ws-dot"></div>
+    <span id="ws-label">連線中…</span>
+  </div>
+</header>
+
+<!-- ════ Main ════ -->
+<main>
+
+  <!-- ──── 圖表欄 ──── -->
+  <div id="chart-col">
+
+    <!-- K 線圖 -->
+    <div id="chart-wrapper">
+      <div id="chart"></div>
+
+      <!-- OHLCV Legend -->
+      <div id="chart-legend">
+        <div class="leg-item"><span class="leg-lbl">O</span><span class="leg-val" id="leg-o">--</span></div>
+        <div class="leg-item"><span class="leg-lbl">H</span><span class="leg-val" id="leg-h" style="color:var(--lower)">--</span></div>
+        <div class="leg-item"><span class="leg-lbl">L</span><span class="leg-val" id="leg-l" style="color:var(--sell)">--</span></div>
+        <div class="leg-item"><span class="leg-lbl">C</span><span class="leg-val" id="leg-c">--</span></div>
+        <div class="leg-item"><span class="leg-lbl">V</span><span class="leg-val" id="leg-v" style="color:var(--muted)">--</span></div>
+      </div>
+
+      <!-- Interval Buttons -->
+      <div class="interval-bar">
+        <button class="interval-btn active" onclick="setIntervalBtn('15m')">15m</button>
+        <button class="interval-btn" onclick="setIntervalBtn('1h')">1h</button>
+        <button class="interval-btn" onclick="setIntervalBtn('4h')">4h</button>
+        <button class="interval-btn" onclick="setIntervalBtn('1d')">1d</button>
+      </div>
+
+      <!-- Click-to-set banner -->
+      <div id="click-set-banner">📍 點擊圖表設定 <span id="click-set-target">--</span> 價格</div>
+
+      <div id="chart-loading"><div class="spin"></div>載入 K 線中…</div>
+    </div>
+
+    <!-- 即時日誌 -->
+    <div id="log-panel">
+      <div class="log-header">
+        <span class="log-title">📟 即時日誌 (grid_bot.log)</span>
+        <button class="log-toggle" onclick="toggleLog()" id="log-toggle-btn">▲ 收起</button>
+      </div>
+      <div id="log-body"></div>
+    </div>
+
+    <!-- 訂單監控 -->
+    <div id="orders-panel">
+      <div class="orders-header">
+        <span class="orders-header-title">📋 訂單監控</span>
+        <div class="orders-tabs">
+          <button class="orders-tab active" onclick="switchOrdersTab('pending')">掛單</button>
+          <button class="orders-tab" onclick="switchOrdersTab('fills')">成交記錄</button>
+        </div>
+        <div class="ord-balance">帳戶: <span class="bal" id="ord-balance">--</span> USDT</div>
+      </div>
+      <div class="orders-body">
+        <table class="orders-table">
+          <thead id="orders-thead">
+            <tr><th>價格</th><th>方向</th><th>數量</th><th>狀態</th><th>訂單ID</th></tr>
+          </thead>
+          <tbody id="orders-tbody">
+            <tr><td colspan="5" style="text-align:center;padding:12px;color:var(--muted)">等待載入…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /chart-col -->
+
+  <!-- ──── 右側面板 ──── -->
+  <aside>
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('suggest')">💡 策略</div>
+      <div class="tab" onclick="switchTab('settings')">📐 設定</div>
+      <div class="tab" onclick="switchTab('bot')">🤖 機器人</div>
+      <div class="tab" onclick="switchTab('wallet')">💼 錢包</div>
+    </div>
+
+    <!-- ═══ 策略建議 ═══ -->
+    <div class="tab-panel active" id="panel-suggest">
+      <div>
+        <div class="sec-title">市場指標</div>
+        <div class="indicator-row">
+          <div class="ind-box" style="grid-column:1/-1">
+            <div class="ind-lbl">市場狀態</div>
+            <div class="ind-val" id="ind-regime"><span class="regime-badge regime-RANGING">--</span></div>
+          </div>
+          <div class="ind-box"><div class="ind-lbl">ATR(14)</div><div class="ind-val" id="ind-atr">--</div></div>
+          <div class="ind-box"><div class="ind-lbl">ATR %</div><div class="ind-val" id="ind-atr-pct">--</div></div>
+          <div class="ind-box"><div class="ind-lbl">布林通道寬</div><div class="ind-val" id="ind-bbw">--</div></div>
+          <div class="ind-box"><div class="ind-lbl">年化波動率</div><div class="ind-val" id="ind-hv">--</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>三組策略建議</span>
+          <button class="btn-apply" onclick="refreshSuggest()" style="font-size:9px;padding:2px 7px;">↻ 刷新</button>
+        </div>
+        <div id="suggest-body"><div class="suggest-loading">🔄 計算中…</div></div>
+      </div>
+    </div>
+
+    <!-- ═══ 網格設定 ═══ -->
+    <div class="tab-panel" id="panel-settings">
+
+      <!-- 上下限 -->
+      <div>
+        <div class="sec-title">網格區間</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+
+          <div class="line-card upper">
+            <div class="lc-head"><div class="lc-dot" style="background:var(--upper)"></div>上限 UPPER</div>
+            <div class="lc-price upper" id="upper-disp">---</div>
+            <input class="lc-input" type="number" id="upper-inp" step="0.01" placeholder="輸入上限"
+                   oninput="onManualInput('upper')" onblur="onManualBlur()">
+          </div>
+
+          <div class="line-card lower">
+            <div class="lc-head"><div class="lc-dot" style="background:var(--lower)"></div>下限 LOWER</div>
+            <div class="lc-price lower" id="lower-disp">---</div>
+            <input class="lc-input" type="number" id="lower-inp" step="0.01" placeholder="輸入下限"
+                   oninput="onManualInput('lower')" onblur="onManualBlur()">
+          </div>
+
+          <!-- Click-to-Set -->
+          <div style="display:flex;gap:5px">
+            <button class="btn-click-set" style="flex:1" onclick="startClickSet('upper')" id="btn-cs-upper">
+              📍 點擊設上限
+            </button>
+            <button class="btn-click-set" style="flex:1" onclick="startClickSet('lower')" id="btn-cs-lower">
+              📍 點擊設下限
+            </button>
+          </div>
+
+          <!-- 止損 -->
+          <div class="line-card stoploss">
+            <div class="lc-head"><div class="lc-dot" style="background:var(--sell)"></div>
+              止損 STOP LOSS <span style="font-size:9px;color:var(--muted);margin-left:4px">（選填，0=停用）</span>
+            </div>
+            <div class="lc-price stoploss" id="sl-disp">停用</div>
+            <input class="lc-input" type="number" id="sl-inp" step="0.01" min="0"
+                   placeholder="止損價格（需低於下限）" oninput="onSlInput()">
+          </div>
+
+          <!-- 統計 -->
+          <div class="stat-grid">
+            <div class="stat-box"><div class="stat-lbl">區間幅度</div><div class="stat-val" id="st-range">--</div></div>
+            <div class="stat-box"><div class="stat-lbl">區間%</div><div class="stat-val" id="st-pct">--</div></div>
+            <div class="stat-box"><div class="stat-lbl">每格格距</div><div class="stat-val" id="st-spacing">--</div></div>
+            <div class="stat-box"><div class="stat-lbl">單格淨利</div><div class="stat-val" id="st-gpct">--</div></div>
+          </div>
+
+          <div class="fee-warn" id="fee-warn"></div>
+        </div>
+      </div>
+
+      <!-- 交易模式 -->
+      <div>
+        <div class="sec-title">交易模式</div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <label style="flex:1;cursor:pointer">
+            <input type="radio" name="trade-mode" id="mode-semi" value="semi" checked onchange="onModeChange()">
+            <div class="mode-card" id="mode-card-semi" style="border-color:var(--accent)">
+              <div style="font-size:12px;font-weight:800;color:var(--accent)">🎯 半自動</div>
+              <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">你設上下限<br>機器人執行</div>
+            </div>
+          </label>
+          <label style="flex:1;cursor:pointer">
+            <input type="radio" name="trade-mode" id="mode-auto" value="auto" onchange="onModeChange()">
+            <div class="mode-card" id="mode-card-auto">
+              <div style="font-size:12px;font-weight:800;color:var(--muted)">🤖 全自動</div>
+              <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">ATR/EMA 動態<br>計算上下限</div>
+            </div>
+          </label>
+        </div>
+        <div id="auto-desc" style="display:none;background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.2);border-radius:7px;padding:8px 10px;font-size:10px;color:var(--muted);line-height:1.6;margin-top:8px">
+          🤖 機器人每 30 秒根據 ATR×EMA 自動計算最佳上下限並重新鋪設網格。
+        </div>
+      </div>
+
+      <!-- 半自動設定 -->
+      <div id="semi-settings">
+        <div class="sec-title">交易設定</div>
+        <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
+          <div class="cfg-row">
+            <label>交易方向</label>
+            <select id="sel-dir">
+              <option value="做多 (Long)">📈 做多 (Long)</option>
+              <option value="做空 (Short)">📉 做空 (Short)</option>
+            </select>
+          </div>
+          <div class="cfg-row">
+            <label>網格數量</label>
+            <input type="number" id="inp-gc" value="10" min="2" max="200" oninput="updateStats();calcQtyFromInvestment()">
+          </div>
+          <div class="cfg-row">
+            <label>總投入(USDT)</label>
+            <input type="number" id="inp-investment" value="100" step="10" min="1" oninput="calcQtyFromInvestment()">
+          </div>
+          <div class="calc-qty-row">
+            <span>每格數量</span><span class="calc-qty-val" id="calc-qty-disp">-- 個</span>
+          </div>
+          <div id="min-order-warn" style="display:none;font-size:10px;color:var(--sell);margin-top:2px">
+            ⚠️ 單格金額低於 Binance 最低 5 USDT
+          </div>
+        </div>
+      </div>
+
+      <!-- 全自動設定 -->
+      <div id="auto-settings" style="display:none">
+        <div class="sec-title">全自動設定</div>
+        <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
+          <div class="cfg-row">
+            <label>交易方向</label>
+            <select id="sel-dir-auto">
+              <option value="做多 (Long)">📈 做多 (Long)</option>
+              <option value="做空 (Short)">📉 做空 (Short)</option>
+            </select>
+          </div>
+          <div class="cfg-row">
+            <label>總投入(USDT)</label>
+            <input type="number" id="inp-investment-auto" value="500" step="50" min="1" oninput="calcQtyFromInvestment()">
+          </div>
+          <div class="calc-qty-row">
+            <span>每格數量（估算）</span><span class="calc-qty-val" id="calc-qty-auto-disp">-- 個</span>
+          </div>
+          <div class="cfg-row">
+            <label>資金上限(U)</label>
+            <input type="number" id="inp-capital" value="1000" step="100" min="10">
+          </div>
+        </div>
+      </div>
+
+      <!-- 歷史記錄 -->
+      <div style="flex:1;min-height:0">
+        <div class="sec-title">最近記錄</div>
+        <div style="margin-top:8px;overflow-x:auto">
+          <table>
+            <thead><tr><th>幣種</th><th>模式</th><th>上限</th><th>下限</th><th>狀態</th></tr></thead>
+            <tbody id="hist-body">
+              <tr><td colspan="5" style="text-align:center;padding:8px;color:var(--muted)">載入中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /panel-settings -->
+
+    <!-- ═══ 機器人 ═══ -->
+    <div class="tab-panel" id="panel-bot">
+      <div>
+        <div class="sec-title">執行狀態</div>
+        <div class="bot-status-row" style="margin-top:8px">
+          <div class="bot-status-dot stopped" id="bot-dot"></div>
+          <div>
+            <div class="bot-status-text stopped" id="bot-status-text">機器人未啟動</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:1px" id="bot-symbol-text">--</div>
+          </div>
+        </div>
+        <div class="stat-grid" style="margin-top:8px">
+          <div class="stat-box"><div class="stat-lbl">幣種</div><div class="stat-val" id="bot-symbol">--</div></div>
+          <div class="stat-box"><div class="stat-lbl">網格數</div><div class="stat-val" id="bot-grids">--</div></div>
+          <div class="stat-box"><div class="stat-lbl">上限</div><div class="stat-val" style="color:var(--upper)" id="bot-upper">--</div></div>
+          <div class="stat-box"><div class="stat-lbl">下限</div><div class="stat-val" style="color:var(--lower)" id="bot-lower">--</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec-title">網格控制</div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn-start" id="btn-save" onclick="saveGrid()">🚀 確認設定並啟動網格</button>
+          <button class="btn-stop" id="btn-stop" onclick="confirmStopGrid()">⏹ 停止網格機器人</button>
+          <button class="btn-kill" id="btn-kill" onclick="confirmKillSwitch()">☠ 進階 Kill Switch（撤銷交易所掛單）</button>
+        </div>
+      </div>
+
+      <div style="background:var(--hover);border-radius:8px;padding:10px;font-size:11px;color:var(--muted);line-height:1.7">
+        <div style="font-weight:700;color:var(--text);margin-bottom:5px">📌 操作流程</div>
+        <div>① 用「點擊設上/下限」按鈕在圖表取值</div>
+        <div>② 查看「策略建議」選擇適合方案</div>
+        <div>③ 設定格數與總投入金額</div>
+        <div>④ 啟動網格，機器人進入監控</div>
+        <div>⑤ 觸及格線時自動下單來回獲利</div>
+      </div>
+    </div>
+
+    <!-- ═══ 錢包 ═══ -->
+    <div class="tab-panel" id="panel-wallet">
+      <div>
+        <div class="sec-title">帳戶總覽</div>
+        <div class="stat-grid" style="margin-top:8px">
+          <div class="stat-box"><div class="stat-lbl">USDT 可用</div><div class="stat-val" id="wallet-usdt-free">--</div></div>
+          <div class="stat-box"><div class="stat-lbl">USDT 總計</div><div class="stat-val" id="wallet-usdt-total">--</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="sec-title">持倉列表</div>
+        <div id="wallet-positions" style="margin-top:8px;display:flex;flex-direction:column;gap:3px">
+          <div style="text-align:center;color:var(--muted);font-size:11px;padding:10px">點擊下方刷新</div>
+        </div>
+      </div>
+      <div>
+        <div class="sec-title">持倉均價線（紫色）</div>
+        <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+          <input type="number" id="inp-avg-cost" step="0.01" min="0"
+                 placeholder="輸入持倉均價…"
+                 style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px"
+                 oninput="updateAvgCostLine()">
+          <button class="btn-apply" onclick="clearAvgCostLine()" style="white-space:nowrap">清除</button>
+        </div>
+      </div>
+      <button class="btn-start" style="background:var(--purple);margin-top:auto" onclick="fetchFullBalance()">
+        ↻ 刷新餘額
+      </button>
+    </div>
+
+  </aside>
+</main>
+
+<!-- ════ JavaScript ════ -->
+<script>
+'use strict';
+
+// ══════════════════════════════════════════════
+//  Auth & Token
+// ══════════════════════════════════════════════
+let _authToken = sessionStorage.getItem('aqt_token') || '';
+let _authRequired = false;
+
+async function initAuth() {
+  // 先 ping，若 401 說明需要 token
+  try {
+    const r = await fetch('/api/ping');
+    if (r.status === 401) {
+      _authRequired = true;
+      showLoginModal();
+    }
+    // else: no auth needed or already valid token
+  } catch(e) {}
+}
+
+function showLoginModal() {
+  document.getElementById('login-overlay').classList.add('show');
+  setTimeout(() => document.getElementById('login-token-inp').focus(), 100);
+}
+function hideLoginModal() {
+  document.getElementById('login-overlay').classList.remove('show');
+}
+
+async function doLogin() {
+  const tok = document.getElementById('login-token-inp').value.trim();
+  if (!tok) { document.getElementById('login-err').textContent = '請輸入 Token'; return; }
+  const r = await fetch('/api/ping', { headers: { Authorization: `Bearer ${tok}` } });
+  if (r.ok) {
+    _authToken = tok;
+    sessionStorage.setItem('aqt_token', tok);
+    hideLoginModal();
+    boot();
+  } else {
+    document.getElementById('login-err').textContent = '❌ Token 錯誤，請重試';
+  }
+}
+
+function authHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (_authToken) h['Authorization'] = `Bearer ${_authToken}`;
+  return h;
+}
+
+async function authFetch(url, opts = {}) {
+  opts.headers = { ...authHeaders(), ...(opts.headers || {}) };
+  const r = await fetch(url, opts);
+  if (r.status === 401) { showLoginModal(); throw new Error('未授權'); }
+  return r;
+}
+
+// ══════════════════════════════════════════════
+//  Toast Notifications
+// ══════════════════════════════════════════════
+function showToast(msg, type = 'info', duration = 3500) {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  t.textContent = msg;
+  t.onclick = () => t.remove();
+  c.appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 280); }, duration);
+}
+
+// ══════════════════════════════════════════════
+//  Modal Dialog
+// ══════════════════════════════════════════════
+function showModal({ title, message, onConfirm, danger = false }) {
+  document.getElementById('modal-title').textContent   = title;
+  document.getElementById('modal-message').textContent = message;
+  const btn = document.getElementById('modal-confirm-btn');
+  btn.className = `modal-btn ${danger ? 'danger' : 'primary'}`;
+  btn.onclick = () => { closeModal(); onConfirm(); };
+  document.getElementById('modal-overlay').classList.add('show');
+}
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('show');
+}
+
+// ══════════════════════════════════════════════
+//  State Variables
+// ══════════════════════════════════════════════
+let chart, candleSeries, volumeSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMidSeries;
+let upperLine = null, lowerLine = null, avgCostLine = null;
+let upperPrice = 0, lowerPrice = 0, currentPrice = null, prevPx = null;
+let ws = null, wsTimer = null, pollTimer = null;
+let logWs = null;
+let currentSymbol = 'BTCUSDT', currentInterval = '15m';
+let currentLimit   = 192;
+let suggestData    = null;
+let ordersTab      = 'pending';
+let clickSetMode   = null;   // null | 'upper' | 'lower'
+let _klinesCache   = [];     // for indicator computation
+
+const TZ_OFFSET      = -(new Date().getTimezoneOffset()) * 60;
+const INTERVAL_LIMITS = { '15m': 192, '1h': 168, '4h': 180, '1d': 1825 };
+const ROUND_TRIP_FEE  = 0.002;
+const MIN_NET_PROFIT  = 0.004;
+const MIN_ORDER_USDT  = 5;
+
+const C = { upper: '#f97316', lower: '#22c55e', purple: '#a371f7' };
+
+// ══════════════════════════════════════════════
+//  Tab Switching
+// ══════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    const panels = ['suggest', 'settings', 'bot', 'wallet'];
+    t.classList.toggle('active', panels[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(`panel-${name}`).classList.add('active');
+}
+
+// ══════════════════════════════════════════════
+//  Chart Initialization
+// ══════════════════════════════════════════════
+function initChart() {
+  const wrap = document.getElementById('chart-wrapper');
+  chart = LightweightCharts.createChart(document.getElementById('chart'), {
+    layout:  { background: { color: '#0d1117' }, textColor: '#8b949e' },
+    grid:    { vertLines: { color: '#1a2030' }, horzLines: { color: '#1a2030' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: '#30363d' },
+    localization: {
+      locale: 'zh-TW',
+      dateFormat: 'yyyy-MM-dd',
+    },
+    timeScale: {
+      borderColor: '#30363d',
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: (time, tickMarkType) => {
+        const d = new Date((time + TZ_OFFSET) * 1000);
+        const MM = String(d.getUTCMonth()+1).padStart(2,'0');
+        const DD = String(d.getUTCDate()).padStart(2,'0');
+        const HH = String(d.getUTCHours()).padStart(2,'0');
+        const mm = String(d.getUTCMinutes()).padStart(2,'0');
+        if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
+        if (tickMarkType === 1) return `${d.getUTCFullYear()}/${MM}`;
+        if (tickMarkType === 2) return `${MM}/${DD}`;
+        return `${HH}:${mm}`;
+      },
+    },
+    width:  wrap.clientWidth,
+    height: wrap.clientHeight,
+  });
+
+  // Candlestick Series（含 autoscaleInfoProvider）
+  candleSeries = chart.addCandlestickSeries({
+    upColor:       '#22c55e', downColor:       '#f85149',
+    borderUpColor: '#22c55e', borderDownColor: '#f85149',
+    wickUpColor:   '#22c55e', wickDownColor:   '#f85149',
+    autoscaleInfoProvider: original => {
+      const res = original();
+      if (!res) return null;
+      if (upperPrice > 0 && lowerPrice > 0) {
+        const pad = (upperPrice - lowerPrice) * 0.08;
+        res.priceRange.minValue = Math.min(res.priceRange.minValue, lowerPrice - pad);
+        res.priceRange.maxValue = Math.max(res.priceRange.maxValue, upperPrice + pad);
+      }
+      if (avgCostLine) {
+        const avg = parseFloat(document.getElementById('inp-avg-cost').value) || 0;
+        if (avg > 0) {
+          res.priceRange.minValue = Math.min(res.priceRange.minValue, avg * 0.995);
+          res.priceRange.maxValue = Math.max(res.priceRange.maxValue, avg * 1.005);
+        }
+      }
+      return res;
+    },
+  });
+
+  // Volume Histogram（獨立子圖）
+  volumeSeries = chart.addHistogramSeries({
+    color: '#26a69a', priceFormat: { type: 'volume' },
+    priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false,
+  });
+  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+  // EMA(20)
+  emaSeries = chart.addLineSeries({
+    color: '#e3b341', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+
+  // Bollinger Bands（上、中、下）
+  bbUpperSeries = chart.addLineSeries({
+    color: 'rgba(163,113,247,.5)', lineWidth: 1, lineStyle: 1,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+  bbMidSeries = chart.addLineSeries({
+    color: 'rgba(163,113,247,.3)', lineWidth: 1, lineStyle: 2,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+  bbLowerSeries = chart.addLineSeries({
+    color: 'rgba(163,113,247,.5)', lineWidth: 1, lineStyle: 1,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+
+  // OHLCV Legend
+  const legEl = document.getElementById('chart-legend');
+  chart.subscribeCrosshairMove(param => {
+    if (!param.point || !param.seriesData?.size) {
+      legEl.classList.remove('show'); return;
+    }
+    const d = param.seriesData.get(candleSeries);
+    const v = param.seriesData.get(volumeSeries);
+    if (!d) { legEl.classList.remove('show'); return; }
+    legEl.classList.add('show');
+    document.getElementById('leg-o').textContent = fmtP(d.open);
+    document.getElementById('leg-h').textContent = fmtP(d.high);
+    document.getElementById('leg-l').textContent = fmtP(d.low);
+    document.getElementById('leg-c').textContent = fmtP(d.close);
+    document.getElementById('leg-v').textContent = v ? fmtVol(v.value) : '--';
+    updateLivePx(d.close, false);
+  });
+
+  // Click-to-set
+  chart.subscribeClick(param => {
+    if (!clickSetMode || !param.point) return;
+    const price = candleSeries.coordinateToPrice(param.point.y);
+    if (price === null || price <= 0) return;
+    if (clickSetMode === 'upper') {
+      upperPrice = price;
+      showToast(`▲ 上限設定：$${fmtP(price)}`, 'info');
+    } else {
+      lowerPrice = price;
+      showToast(`▼ 下限設定：$${fmtP(price)}`, 'info');
+    }
+    const mode = clickSetMode;
+    endClickSet();
+    syncInputs();
+    refreshLines();
+    updateStats();
+    // Update display card
+    if (mode === 'upper') document.getElementById('upper-disp').textContent = '$' + fmtP(upperPrice);
+    else document.getElementById('lower-disp').textContent = '$' + fmtP(lowerPrice);
+  });
+
+  // Resize observer
+  new ResizeObserver(() => chart.resize(wrap.clientWidth, wrap.clientHeight)).observe(wrap);
+}
+
+// ══════════════════════════════════════════════
+//  Price Lines
+// ══════════════════════════════════════════════
+function refreshLines() {
+  if (!candleSeries) return;
+  if (upperLine) { try { candleSeries.removePriceLine(upperLine); } catch(e){} upperLine = null; }
+  if (lowerLine) { try { candleSeries.removePriceLine(lowerLine); } catch(e){} lowerLine = null; }
+  if (upperPrice > 0) {
+    upperLine = candleSeries.createPriceLine({
+      price: upperPrice, color: C.upper, lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: '▲ UPPER',
+    });
+  }
+  if (lowerPrice > 0) {
+    lowerLine = candleSeries.createPriceLine({
+      price: lowerPrice, color: C.lower, lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: '▼ LOWER',
+    });
+  }
+  // Draw grid level lines (faint)
+  drawGridLines();
+}
+
+function drawGridLines() {
+  // Remove existing grid lines (they're separate price lines stored in an array)
+  if (window._gridLines) {
+    window._gridLines.forEach(l => { try { candleSeries.removePriceLine(l); } catch(e){} });
+  }
+  window._gridLines = [];
+  if (upperPrice <= 0 || lowerPrice <= 0 || upperPrice <= lowerPrice) return;
+  const gc = parseInt(document.getElementById('inp-gc')?.value) || 10;
+  const sp = (upperPrice - lowerPrice) / gc;
+  for (let i = 1; i < gc; i++) {
+    const p = lowerPrice + i * sp;
+    const gl = candleSeries.createPriceLine({
+      price: p, color: 'rgba(88,166,255,.18)', lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false, title: '',
+    });
+    window._gridLines.push(gl);
+  }
+}
+
+function updateAvgCostLine() {
+  const price = parseFloat(document.getElementById('inp-avg-cost').value) || 0;
+  if (avgCostLine) { try { candleSeries.removePriceLine(avgCostLine); } catch(e){} avgCostLine = null; }
+  if (price > 0 && candleSeries) {
+    avgCostLine = candleSeries.createPriceLine({
+      price, color: C.purple, lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: '📍 均價',
+    });
+  }
+}
+function clearAvgCostLine() {
+  document.getElementById('inp-avg-cost').value = '';
+  if (avgCostLine) { try { candleSeries.removePriceLine(avgCostLine); } catch(e){} avgCostLine = null; }
+}
+
+// ══════════════════════════════════════════════
+//  Click-to-Set
+// ══════════════════════════════════════════════
+function startClickSet(which) {
+  clickSetMode = which;
+  const label = which === 'upper' ? '上限' : '下限';
+  document.getElementById('click-set-target').textContent = label;
+  document.getElementById('click-set-banner').style.display = '';
+  document.getElementById('btn-cs-upper').classList.toggle('active', which === 'upper');
+  document.getElementById('btn-cs-lower').classList.toggle('active', which === 'lower');
+  document.getElementById('chart').style.cursor = 'crosshair';
+}
+function endClickSet() {
+  clickSetMode = null;
+  document.getElementById('click-set-banner').style.display = 'none';
+  document.getElementById('btn-cs-upper').classList.remove('active');
+  document.getElementById('btn-cs-lower').classList.remove('active');
+  document.getElementById('chart').style.cursor = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') endClickSet(); });
+
+// ══════════════════════════════════════════════
+//  Indicators: EMA & Bollinger Bands
+// ══════════════════════════════════════════════
+function calcEMA(data, period = 20) {
+  const k = 2 / (period + 1);
+  let ema = null;
+  return data.map(d => {
+    ema = ema === null ? d.close : d.close * k + ema * (1 - k);
+    return { time: d.time, value: ema };
+  });
+}
+
+function calcBB(data, period = 20, mult = 2) {
+  const upper = [], mid = [], lower = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) continue;
+    const slice  = data.slice(i - period + 1, i + 1).map(d => d.close);
+    const mean   = slice.reduce((a, b) => a + b, 0) / period;
+    const stddev = Math.sqrt(slice.reduce((s, c) => s + (c - mean) ** 2, 0) / period);
+    const t = data[i].time;
+    upper.push({ time: t, value: mean + mult * stddev });
+    mid.push(  { time: t, value: mean });
+    lower.push({ time: t, value: mean - mult * stddev });
+  }
+  return { upper, mid, lower };
+}
+
+function applyIndicators(data) {
+  if (!data || data.length < 20) return;
+  try {
+    emaSeries.setData(calcEMA(data, 20));
+    const bb = calcBB(data, 20);
+    bbUpperSeries.setData(bb.upper);
+    bbMidSeries.setData(bb.mid);
+    bbLowerSeries.setData(bb.lower);
+  } catch(e) { console.warn('[indicators]', e); }
+}
+
+// ══════════════════════════════════════════════
+//  Trade Markers
+// ══════════════════════════════════════════════
+async function loadTradeMarkers() {
+  try {
+    const r = await fetch(`/api/recent_fills?limit=50&symbol=${currentSymbol}`);
+    const d = await r.json();
+    const fills = d.fills || [];
+    const markers = fills.map(f => {
+      const ts = f.created_at ? Math.floor(new Date(f.created_at).getTime() / 1000) + TZ_OFFSET : 0;
+      if (!ts) return null;
+      const isBuy = f.side === 'BUY';
+      const px = isBuy ? (f.buy_price || 0) : (f.sell_price || 0);
+      return {
+        time: ts, position: isBuy ? 'belowBar' : 'aboveBar',
+        color: isBuy ? '#22c55e' : '#f85149',
+        shape: isBuy ? 'arrowUp' : 'arrowDown',
+        text: `${isBuy ? 'B' : 'S'} $${fmtK(px)}`,
+      };
+    }).filter(Boolean).sort((a, b) => a.time - b.time);
+    if (markers.length) candleSeries.setMarkers(markers);
+  } catch(e) {}
+}
+
+// ══════════════════════════════════════════════
+//  Interval Buttons
+// ══════════════════════════════════════════════
+function setIntervalBtn(iv) {
+  currentInterval = iv;
+  currentLimit    = INTERVAL_LIMITS[iv] || 192;
+  document.querySelectorAll('.interval-btn').forEach(b =>
+    b.classList.toggle('active', b.textContent.trim() === iv));
+  loadKlines(currentSymbol, currentInterval, currentLimit, false);
+  connectWS(currentSymbol, currentInterval);
+}
+
+// ══════════════════════════════════════════════
+//  K-line Loading
+// ══════════════════════════════════════════════
+async function loadKlines(symbol, interval, limit, resetGrid) {
+  showLoading(true);
+  try {
+    const r = await fetch(`/api/klines/${symbol}?interval=${interval}&limit=${limit}`);
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+
+    const adj = data.map(k => ({ ...k, time: k.time + TZ_OFFSET }));
+    _klinesCache = adj;
+    candleSeries.setData(adj);
+
+    // Volume
+    volumeSeries.setData(adj.map(k => ({
+      time: k.time, value: k.volume,
+      color: k.close >= k.open ? 'rgba(34,197,94,.35)' : 'rgba(248,81,73,.35)',
+    })));
+
+    // Indicators
+    applyIndicators(adj);
+
+    // Markers
+    loadTradeMarkers();
+
+    chart.timeScale().fitContent();
+    chart.timeScale().scrollToRealTime();
+
+    if (adj.length > 0) {
+      const last = adj[adj.length - 1];
+      updateLivePx(last.close, true);
+      if (resetGrid) {
+        upperPrice = last.close * 1.05;
+        lowerPrice = last.close * 0.95;
+        syncInputs();
+        refreshLines();
+        updateStats();
+      }
+    }
+  } catch(err) {
+    console.error('[loadKlines]', err);
+    showToast(`K 線載入失敗: ${err.message}`, 'error');
+  } finally {
+    showLoading(false);
+  }
+}
+
+// ══════════════════════════════════════════════
+//  24h Ticker
+// ══════════════════════════════════════════════
+async function load24h(symbol) {
+  try {
+    const r = await fetch(`/api/ticker24h/${symbol}`);
+    const d = await r.json();
+    if (d.error) return;
+    updateLivePx(d.price, true);
+    const badge = document.getElementById('badge-change');
+    badge.style.display = '';
+    badge.textContent = (d.change >= 0 ? '+' : '') + d.change.toFixed(2) + '%';
+    badge.className   = 'badge ' + (d.change >= 0 ? 'up' : 'down');
+    const hEl = document.getElementById('hdr-high'), lEl = document.getElementById('hdr-low');
+    hEl.style.display = lEl.style.display = '';
+    hEl.querySelector('span').textContent = fmtP(d.high);
+    lEl.querySelector('span').textContent = fmtP(d.low);
+  } catch(e) {}
+}
+
+// ══════════════════════════════════════════════
+//  WebSocket Kline Proxy
+// ══════════════════════════════════════════════
+function connectWS(symbol, interval) {
+  clearTimeout(wsTimer);
+  stopPoll();
+  if (ws) { try { ws.close(); } catch(e){} ws = null; }
+  setWsState('connecting');
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/kline/${symbol}?interval=${interval}`);
+  ws.onopen  = () => { setWsState('ok'); stopPoll(); };
+  ws.onerror = () => setWsState('warn');
+  ws.onclose = () => {
+    setWsState('err'); startPoll(symbol);
+    wsTimer = setTimeout(() => connectWS(symbol, interval), 5000);
+  };
+  ws.onmessage = e => {
+    try { const m = JSON.parse(e.data); if (m.e === 'kline') onKline(m.k); } catch(e) {}
+  };
+}
+
+function onKline(k) {
+  const candle = { time: Math.floor(k.t / 1000) + TZ_OFFSET, open: +k.o, high: +k.h, low: +k.l, close: +k.c };
+  candleSeries.update(candle);
+  volumeSeries.update({ time: candle.time, value: +k.v, color: +k.c >= +k.o ? 'rgba(34,197,94,.35)' : 'rgba(248,81,73,.35)' });
+  updateLivePx(+k.c, true);
+}
+
+function startPoll(symbol) {
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    try { const r = await fetch(`/api/ticker24h/${symbol}`); const d = await r.json(); if (d.price) updateLivePx(d.price, true); } catch(e) {}
+  }, 3000);
+}
+function stopPoll() { clearInterval(pollTimer); pollTimer = null; }
+
+// ══════════════════════════════════════════════
+//  Strategy Suggest
+// ══════════════════════════════════════════════
+async function refreshSuggest() {
+  document.getElementById('suggest-body').innerHTML = '<div class="suggest-loading">🔄 計算中…</div>';
+  try {
+    const r = await fetch(`/api/strategy_suggest?symbol=${currentSymbol}&interval=1h`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    suggestData = d;
+    renderIndicators(d.indicators);
+    renderStrategies(d.strategies);
+  } catch(e) {
+    document.getElementById('suggest-body').innerHTML =
+      `<div class="suggest-loading" style="color:var(--sell)">⚠️ ${e.message}</div>`;
+  }
+}
+
+function renderIndicators(ind) {
+  const regime = ind.market_regime;
+  const label  = { RANGING: '橫盤震盪', TRENDING: '趨勢行情', HIGH_VOL: '高波動' }[regime] || regime;
+  document.getElementById('ind-regime').innerHTML = `<span class="regime-badge regime-${regime}">${label}</span>`;
+  document.getElementById('ind-atr').textContent     = fmtP(ind.atr_14);
+  document.getElementById('ind-atr-pct').textContent = ind.atr_pct;
+  document.getElementById('ind-bbw').textContent     = ind.bb_width_pct;
+  document.getElementById('ind-hv').textContent      = ind.hv_30d_pct;
+}
+
+function renderStrategies(strategies) {
+  const colors = { conservative: '#58a6ff', standard: '#e3b341', aggressive: '#f97316' };
+  const ranges  = Object.values(strategies).map(s => s.upper_price - s.lower_price);
+  const maxRange = Math.max(...ranges) || 1;
+  let html = '';
+  for (const [key, s] of Object.entries(strategies)) {
+    const col    = colors[key];
+    const range  = s.upper_price - s.lower_price;
+    const barPct = (range / maxRange * 100).toFixed(1);
+    const risk   = { conservative: '低風險・格密・頻繁成交', standard: '中風險・ATR 平衡格距', aggressive: '高風險・寬區間・單格獲利高' }[key];
+    html += `<div class="strategy-card" style="border-left:3px solid ${col}">
+      <div class="sc-head">
+        <span class="sc-name" style="color:${col}">${s.emoji} ${s.name}</span>
+        <button class="btn-apply" style="border-color:${col};color:${col}" onclick="applyStrategy('${key}')">套用 →</button>
+      </div>
+      <div class="sc-desc" style="color:var(--muted)">${risk}</div>
+      <div style="background:var(--bg);border-radius:3px;height:4px;margin:6px 0">
+        <div style="width:${barPct}%;height:100%;background:${col};border-radius:3px;opacity:.8"></div>
+      </div>
+      <div class="sc-vals">
+        <div class="sc-item"><span class="sc-lbl">▲ 上限</span><span class="sc-val" style="color:var(--upper)">$${fmtK(s.upper_price)}</span></div>
+        <div class="sc-item"><span class="sc-lbl">▼ 下限</span><span class="sc-val" style="color:var(--lower)">$${fmtK(s.lower_price)}</span></div>
+        <div class="sc-item"><span class="sc-lbl">格數</span><span class="sc-val">${s.grid_count} 格</span></div>
+        <div class="sc-item"><span class="sc-lbl">格距</span><span class="sc-val">$${fmtK(s.spacing)}</span></div>
+        <div class="sc-item"><span class="sc-lbl">區間幅</span><span class="sc-val">${(range/(s.upper_price+s.lower_price)*200).toFixed(1)}%</span></div>
+        <div class="sc-item"><span class="sc-lbl">單格利潤</span><span class="sc-val" style="color:${col}">${s.profit_pct}</span></div>
+      </div>
+    </div>`;
+  }
+  document.getElementById('suggest-body').innerHTML = html;
+}
+
+function applyStrategy(key) {
+  if (!suggestData?.strategies?.[key]) return;
+  const s = suggestData.strategies[key];
+  upperPrice = s.upper_price;
+  lowerPrice = s.lower_price;
+  document.getElementById('inp-gc').value = s.grid_count;
+  syncInputs(); refreshLines(); updateStats(); calcQtyFromInvestment();
+  switchTab('settings');
+  showToast(`已套用「${s.name}」策略`, 'success');
+}
+
+// ══════════════════════════════════════════════
+//  Bot Status
+// ══════════════════════════════════════════════
+async function fetchBotStatus() {
+  try {
+    const r = await fetch('/api/grid_status');
+    const d = await r.json();
+    const running = d.running;
+    const pill = document.getElementById('bot-pill');
+    pill.classList.toggle('running', running);
+    document.getElementById('bot-pill-text').textContent = running ? '機器人執行中' : '未啟動';
+    const dot = document.getElementById('bot-dot'), txt = document.getElementById('bot-status-text');
+    dot.className = `bot-status-dot ${running ? 'running' : 'stopped'}`;
+    txt.className = `bot-status-text ${running ? 'running' : 'stopped'}`;
+    txt.textContent = running ? '✅ 機器人執行中' : '⏸ 機器人未啟動';
+    if (d.last_config) {
+      const c = d.last_config;
+      document.getElementById('bot-symbol').textContent = c.symbol || '--';
+      document.getElementById('bot-grids').textContent  = c.grid_count ?? '--';
+      document.getElementById('bot-upper').textContent  = c.upper_price ? `$${fmtK(c.upper_price)}` : '--';
+      document.getElementById('bot-lower').textContent  = c.lower_price ? `$${fmtK(c.lower_price)}` : '--';
+      document.getElementById('bot-symbol-text').textContent = `${c.symbol} / ${c.grid_count} 格`;
+    }
+  } catch(e) {}
+}
+
+// ══════════════════════════════════════════════
+//  Grid Operations
+// ══════════════════════════════════════════════
+async function saveGrid() {
+  const mode = getTradeMode();
+  const gc   = parseInt(document.getElementById('inp-gc').value) || 10;
+
+  if (mode === 'semi') {
+    if (upperPrice <= lowerPrice) { showToast('✗ 上限必須大於下限', 'error'); return; }
+    if (currentPrice !== null) {
+      if (currentPrice >= upperPrice) { showToast(`✗ 當前價格 $${fmtP(currentPrice)} 已高於上限`, 'error'); return; }
+      if (currentPrice <= lowerPrice) { showToast(`✗ 當前價格 $${fmtP(currentPrice)} 已低於下限`, 'error'); return; }
+    }
+    const slVal = parseFloat(document.getElementById('sl-inp').value) || 0;
+    if (slVal > 0 && slVal >= lowerPrice) { showToast(`✗ 止損價 $${fmtP(slVal)} 必須低於下限`, 'error'); return; }
+    // Min order size check
+    const qty = calcQtyFromInvestment();
+    const orderUsdt = qty * (currentPrice || upperPrice);
+    if (orderUsdt < MIN_ORDER_USDT) {
+      showToast(`✗ 單格金額 $${orderUsdt.toFixed(2)} 低於 Binance 最低 $5 USDT`, 'error');
+      return;
+    }
+  }
+
+  const btn = document.getElementById('btn-save');
+  btn.disabled = true;
+  showToast('傳送設定中…', 'info', 2000);
+
+  try {
+    const slVal  = parseFloat(document.getElementById('sl-inp').value) || 0;
+    const qtyCalc = calcQtyFromInvestment();
+    let payload;
+
+    if (mode === 'semi') {
+      payload = {
+        symbol: currentSymbol, trade_mode: 'semi',
+        direction: document.getElementById('sel-dir').value,
+        upper_price: upperPrice, lower_price: lowerPrice, grid_count: gc,
+        qty_per_grid: qtyCalc > 0 ? qtyCalc : 0.001,
+        stop_loss_price: slVal,
+      };
+    } else {
+      const inv2   = parseFloat(document.getElementById('inp-investment-auto').value) || 500;
+      const qtyAuto = (inv2 > 0 && currentPrice > 0) ? (inv2 / 10 / currentPrice) : 0.001;
+      payload = {
+        symbol: currentSymbol, trade_mode: 'auto',
+        direction: document.getElementById('sel-dir-auto').value,
+        upper_price: upperPrice, lower_price: lowerPrice, grid_count: 10,
+        qty_per_grid: qtyAuto, stop_loss_price: 0,
+      };
+    }
+
+    const r = await authFetch('/api/save_grid', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || '儲存失敗');
+    showToast(d.message, 'success', 5000);
+    setTimeout(() => { loadHistory(); fetchBotStatus(); }, 600);
+  } catch(err) {
+    showToast(`✗ ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function confirmStopGrid() {
+  showModal({
+    title: '停止網格機器人',
+    message: '確定要發送停止訊號？機器人完成當前 tick 後退出，現有掛單保留在交易所。',
+    onConfirm: doStopGrid,
+  });
+}
+
+async function doStopGrid() {
+  try {
+    const r = await authFetch('/api/stop_grid', { method: 'POST' });
+    const d = await r.json();
+    showToast(d.success ? `✅ ${d.message}` : `⚠️ ${d.message}`, d.success ? 'success' : 'warn');
+    setTimeout(fetchBotStatus, 1000);
+  } catch(e) { showToast('✗ 停止失敗', 'error'); }
+}
+
+function confirmKillSwitch() {
+  showModal({
+    title: '☠ 進階 Kill Switch',
+    message: `這將：① 直接呼叫 Binance API 撤銷 ${currentSymbol} 所有掛單 ② 停止本地機器人進程。此操作不可逆，確定執行？`,
+    onConfirm: doKillSwitch,
+    danger: true,
+  });
+}
+
+async function doKillSwitch() {
+  const btn = document.getElementById('btn-kill');
+  btn.disabled = true;
+  showToast('Kill Switch 執行中…', 'warn', 3000);
+  try {
+    const r = await authFetch(`/api/cancel_all/${currentSymbol}`, { method: 'POST' });
+    const d = await r.json();
+    showToast(d.message, d.success ? 'success' : 'error', 6000);
+    setTimeout(fetchBotStatus, 1500);
+  } catch(e) {
+    showToast(`✗ Kill Switch 失敗: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ══════════════════════════════════════════════
+//  History
+// ══════════════════════════════════════════════
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history?limit=8');
+    const rows = await r.json();
+    const tbody = document.getElementById('hist-body');
+    if (!rows.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:8px;color:var(--muted)">尚無記錄</td></tr>'; return; }
+    tbody.innerHTML = rows.map(row => {
+      const ml = row.trade_mode === 'auto'
+        ? '<span style="color:var(--accent);font-weight:700">🤖 AUTO</span>'
+        : '<span style="color:var(--purple);font-weight:700">🎯 SEMI</span>';
+      const sl = row.status === 'RUNNING'
+        ? '<span style="color:var(--lower);font-weight:700">執行中</span>'
+        : `<span style="color:var(--muted)">${row.status || '--'}</span>`;
+      return `<tr><td>${row.symbol}</td><td>${ml}</td>
+        <td style="color:var(--upper)">${row.upper_price ? '$'+fmtK(row.upper_price) : '動態'}</td>
+        <td style="color:var(--lower)">${row.lower_price ? '$'+fmtK(row.lower_price) : '動態'}</td>
+        <td>${sl}</td></tr>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('hist-body').innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:var(--sell)">載入失敗</td></tr>';
+  }
+}
+
+// ══════════════════════════════════════════════
+//  Trade Mode Toggle
+// ══════════════════════════════════════════════
+function getTradeMode() {
+  return document.querySelector('input[name="trade-mode"]:checked')?.value || 'semi';
+}
+function onModeChange() {
+  const isSemi = getTradeMode() === 'semi';
+  document.getElementById('semi-settings').style.display = isSemi ? '' : 'none';
+  document.getElementById('auto-settings').style.display = isSemi ? 'none' : '';
+  document.getElementById('auto-desc').style.display     = isSemi ? 'none' : '';
+  document.getElementById('sl-inp').closest('.line-card').style.display = isSemi ? '' : 'none';
+  document.getElementById('mode-card-semi').style.borderColor = isSemi ? 'var(--accent)' : 'var(--border)';
+  document.getElementById('mode-card-auto').style.borderColor = !isSemi ? 'var(--accent)' : 'var(--border)';
+  document.getElementById('mode-card-semi').querySelector('div').style.color = isSemi ? 'var(--accent)' : 'var(--muted)';
+  document.getElementById('mode-card-auto').querySelector('div').style.color = !isSemi ? 'var(--accent)' : 'var(--muted)';
+}
+
+// ══════════════════════════════════════════════
+//  Stop Loss Input
+// ══════════════════════════════════════════════
+function onSlInput() {
+  const v = parseFloat(document.getElementById('sl-inp').value);
+  const el = document.getElementById('sl-disp');
+  el.textContent = (!isNaN(v) && v > 0) ? '$' + fmtP(v) : '停用';
+  el.style.color  = (!isNaN(v) && v > 0) ? 'var(--sell)' : 'var(--muted)';
+}
+
+// ══════════════════════════════════════════════
+//  Stats & Validation
+// ══════════════════════════════════════════════
+function updateStats() {
+  if (upperPrice <= 0) return;
+  const gc     = parseInt(document.getElementById('inp-gc').value) || 10;
+  const range  = upperPrice - lowerPrice;
+  const mid    = (upperPrice + lowerPrice) / 2;
+  const sp     = range / gc;
+  const gross  = mid > 0 ? (sp / mid * 100) : 0;
+  const net    = Math.max(0, gross - ROUND_TRIP_FEE * 100);
+  document.getElementById('upper-disp').textContent = '$' + fmtP(upperPrice);
+  document.getElementById('lower-disp').textContent = '$' + fmtP(lowerPrice);
+  document.getElementById('st-range').textContent   = '$' + fmtK(range);
+  document.getElementById('st-pct').textContent     = (range / mid * 100).toFixed(2) + '%';
+  document.getElementById('st-spacing').textContent = '$' + fmtK(sp);
+  const gpEl = document.getElementById('st-gpct');
+  gpEl.textContent = net.toFixed(3) + '%';
+  gpEl.style.color  = net < MIN_NET_PROFIT * 100 ? 'var(--sell)' : 'var(--lower)';
+  const warnEl = document.getElementById('fee-warn');
+  if (net <= 0) {
+    warnEl.style.display = ''; warnEl.className = 'fee-warn red';
+    warnEl.innerHTML = `⛔ 格距 ${gross.toFixed(3)}% 低於手續費，每格必虧！`;
+  } else if (net < MIN_NET_PROFIT * 100) {
+    warnEl.style.display = ''; warnEl.className = 'fee-warn yellow';
+    warnEl.innerHTML = `⚠️ 單格淨利 ${net.toFixed(3)}% 偏低，建議增大格距。`;
+  } else {
+    warnEl.style.display = 'none';
+  }
+  drawGridLines();
+}
+
+// ══════════════════════════════════════════════
+//  Investment → Qty Calculation
+// ══════════════════════════════════════════════
+function calcQtyFromInvestment() {
+  const px  = currentPrice || ((upperPrice + lowerPrice) / 2) || 1;
+  const gc  = parseInt(document.getElementById('inp-gc')?.value) || 10;
+  const inv = parseFloat(document.getElementById('inp-investment')?.value) || 0;
+  const qty = (inv > 0 && px > 0 && gc > 0) ? (inv / gc / px) : 0;
+  const disp = document.getElementById('calc-qty-disp');
+  if (disp) disp.textContent = qty > 0 ? qty.toFixed(6) + ' 個' : '-- 個';
+  // Min order warning
+  const orderUsdt = qty * px;
+  const warn = document.getElementById('min-order-warn');
+  if (warn) warn.style.display = (qty > 0 && orderUsdt < MIN_ORDER_USDT) ? '' : 'none';
+  const btn = document.getElementById('btn-save');
+  if (btn) btn.disabled = (qty > 0 && orderUsdt < MIN_ORDER_USDT && getTradeMode() === 'semi');
+  // Auto
+  const inv2 = parseFloat(document.getElementById('inp-investment-auto')?.value) || 0;
+  const qty2 = (inv2 > 0 && px > 0) ? (inv2 / 10 / px) : 0;
+  const d2   = document.getElementById('calc-qty-auto-disp');
+  if (d2) d2.textContent = qty2 > 0 ? qty2.toFixed(6) + ' 個' : '-- 個';
+  return qty > 0 ? qty : 0.001;
+}
+
+// ══════════════════════════════════════════════
+//  Balance & Orders
+// ══════════════════════════════════════════════
+async function fetchBalance() {
+  try {
+    const r = await fetch('/api/balance');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.free !== undefined) {
+      const v = Number(d.free).toFixed(2);
+      document.getElementById('balance-val').textContent = v;
+      document.getElementById('ord-balance').textContent = v;
+    }
+  } catch(e) {}
+}
+
+let ordersTab = 'pending';
+function switchOrdersTab(tab) {
+  ordersTab = tab;
+  document.querySelectorAll('.orders-tab').forEach(b =>
+    b.classList.toggle('active',
+      (tab === 'pending' && b.textContent === '掛單') ||
+      (tab === 'fills'   && b.textContent === '成交記錄')));
+  tab === 'pending' ? fetchOpenOrders() : fetchRecentFills();
+}
+
+async function fetchOpenOrders() {
+  try {
+    const r = await fetch(`/api/open_orders/${currentSymbol}`);
+    const d = await r.json();
+    const rows = d.orders || [];
+    document.getElementById('orders-thead').innerHTML =
+      '<tr><th>價格</th><th>方向</th><th>數量</th><th>狀態</th><th>訂單ID</th></tr>';
+    document.getElementById('orders-tbody').innerHTML = rows.length
+      ? rows.map(o => {
+          const sc = o.side === 'BUY' ? 'var(--lower)' : 'var(--sell)';
+          return `<tr><td style="font-weight:600">$${fmtP(o.price)}</td>
+            <td style="color:${sc};font-weight:700">${o.side||'--'}</td>
+            <td>${o.qty !== undefined ? Number(o.qty).toFixed(6) : '--'}</td>
+            <td style="color:var(--muted)">${o.status||'--'}</td>
+            <td style="color:var(--muted);font-size:9px">${o.order_id||'--'}</td></tr>`;
+        }).join('')
+      : '<tr><td colspan="5" style="text-align:center;padding:12px;color:var(--muted)">無掛單</td></tr>';
+  } catch(e) {
+    document.getElementById('orders-tbody').innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:var(--sell)">載入失敗</td></tr>';
+  }
+}
+
+async function fetchRecentFills() {
+  try {
+    const r = await fetch(`/api/recent_fills?limit=20&symbol=${currentSymbol}`);
+    const d = await r.json();
+    const rows = d.fills || [];
+    document.getElementById('orders-thead').innerHTML =
+      '<tr><th>時間</th><th>方向</th><th>成交價</th><th>數量</th><th>盈虧(U)</th></tr>';
+    document.getElementById('orders-tbody').innerHTML = rows.length
+      ? rows.map(f => {
+          const sc  = f.side === 'BUY' ? 'var(--lower)' : 'var(--sell)';
+          const pnl = f.pnl != null
+            ? `<span style="color:${Number(f.pnl)>=0?'var(--lower)':'var(--sell)'}">${Number(f.pnl)>=0?'+':''}${Number(f.pnl).toFixed(4)}</span>`
+            : '--';
+          const ts  = (f.created_at||'').replace('T',' ').substring(5,16);
+          const px  = f.sell_price || f.buy_price || 0;
+          return `<tr><td style="color:var(--muted);font-size:9px">${ts||'--'}</td>
+            <td style="color:${sc};font-weight:700">${f.side||'--'}</td>
+            <td>$${fmtP(px)}</td>
+            <td>${f.qty ? Number(f.qty).toFixed(6) : '--'}</td>
+            <td>${pnl}</td></tr>`;
+        }).join('')
+      : '<tr><td colspan="5" style="text-align:center;padding:12px;color:var(--muted)">無成交記錄</td></tr>';
+  } catch(e) {
+    document.getElementById('orders-tbody').innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:var(--sell)">載入失敗</td></tr>';
+  }
+}
+
+// ══════════════════════════════════════════════
+//  Full Balance (Wallet Panel)
+// ══════════════════════════════════════════════
+async function fetchFullBalance() {
+  document.getElementById('wallet-positions').innerHTML =
+    '<div style="text-align:center;color:var(--muted);font-size:11px;padding:10px">載入中…</div>';
+  try {
+    const r = await authFetch('/api/full_balance');
+    const d = await r.json();
+    const bals = d.balances || [];
+    // Update USDT summary
+    const usdt = bals.find(b => b.asset === 'USDT');
+    if (usdt) {
+      document.getElementById('wallet-usdt-free').textContent  = Number(usdt.free).toFixed(2);
+      document.getElementById('wallet-usdt-total').textContent = Number(usdt.total).toFixed(2);
+      document.getElementById('balance-val').textContent = Number(usdt.free).toFixed(2);
+      document.getElementById('ord-balance').textContent = Number(usdt.free).toFixed(2);
+    }
+    const nonUsdt = bals.filter(b => b.asset !== 'USDT');
+    document.getElementById('wallet-positions').innerHTML = nonUsdt.length
+      ? nonUsdt.map(b => `
+        <div class="wallet-asset-row">
+          <div>
+            <div class="wallet-asset-name">${b.asset}</div>
+            <div class="wallet-asset-qty">${Number(b.total).toFixed(6)}</div>
+          </div>
+          <div class="wallet-asset-val">${b.usdt_value != null ? '$' + Number(b.usdt_value).toFixed(2) : '--'}</div>
+        </div>`).join('')
+      : '<div style="text-align:center;color:var(--muted);font-size:11px;padding:10px">無其他持倉</div>';
+    showToast('餘額已刷新', 'success', 2000);
+  } catch(e) {
+    document.getElementById('wallet-positions').innerHTML =
+      `<div style="text-align:center;color:var(--sell);font-size:11px;padding:10px">${e.message}</div>`;
+  }
+}
+
+// ══════════════════════════════════════════════
+//  Log Terminal
+// ══════════════════════════════════════════════
+let _logCollapsed = false;
+function toggleLog() {
+  _logCollapsed = !_logCollapsed;
+  document.getElementById('log-panel').classList.toggle('collapsed', _logCollapsed);
+  document.getElementById('log-toggle-btn').textContent = _logCollapsed ? '▼ 展開' : '▲ 收起';
+}
+
+function connectLogWs() {
+  if (logWs) { try { logWs.close(); } catch(e){} }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  logWs = new WebSocket(`${proto}//${location.host}/ws/logs`);
+  logWs.onmessage = e => appendLog(e.data);
+  logWs.onerror   = () => appendLog('[⚠️ 日誌 WS 連線失敗]');
+  logWs.onclose   = () => setTimeout(connectLogWs, 5000);
+}
+
+function appendLog(line) {
+  const el  = document.getElementById('log-body');
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  if (/ERROR|CRITICAL/i.test(line))   div.classList.add('l-err');
+  else if (/WARNING|WARN/i.test(line)) div.classList.add('l-warn');
+  else if (/成交|部署|RUNNING/i.test(line)) div.classList.add('l-ok');
+  div.textContent = line;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+  while (el.children.length > 300) el.removeChild(el.firstChild);
+}
+
+// ══════════════════════════════════════════════
+//  Latency
+// ══════════════════════════════════════════════
+async function measureLatency() {
+  const start = performance.now();
+  try {
+    await fetch('/api/ping');
+    const ms  = Math.round(performance.now() - start);
+    const el  = document.getElementById('latency-val');
+    el.textContent = ms + 'ms';
+    el.style.color = ms < 100 ? 'var(--lower)' : ms < 400 ? 'var(--gold)' : 'var(--sell)';
+  } catch(e) {}
+}
+
+// ══════════════════════════════════════════════
+//  Manual Input Sync
+// ══════════════════════════════════════════════
+function onManualInput(which) {
+  const uv = parseFloat(document.getElementById('upper-inp').value);
+  const lv = parseFloat(document.getElementById('lower-inp').value);
+  if (which === 'upper' && !isNaN(uv) && uv > lowerPrice) { upperPrice = uv; refreshLines(); updateStats(); }
+  if (which === 'lower' && !isNaN(lv) && lv < upperPrice) { lowerPrice = lv; refreshLines(); updateStats(); }
+}
+function onManualBlur() {
+  if (upperPrice <= lowerPrice + 0.5) upperPrice = lowerPrice + (currentPrice ? currentPrice * 0.01 : 100);
+  syncInputs(); refreshLines(); updateStats();
+}
+function syncInputs() {
+  if (upperPrice > 0) document.getElementById('upper-inp').value = upperPrice.toFixed(4);
+  if (lowerPrice > 0) document.getElementById('lower-inp').value = lowerPrice.toFixed(4);
+}
+
+// ══════════════════════════════════════════════
+//  UI Utilities
+// ══════════════════════════════════════════════
+function updateLivePx(price, persist) {
+  const el   = document.getElementById('live-px');
+  const prev = prevPx ?? price;
+  el.textContent = '$' + fmtP(price);
+  el.className   = 'live-px ' + (price > prev ? 'up' : price < prev ? 'down' : 'flat');
+  if (persist) {
+    prevPx = price; currentPrice = price;
+    calcQtyFromInvestment();
+  }
+}
+function setWsState(state) {
+  const el = document.getElementById('ws-status'), lbl = document.getElementById('ws-label');
+  el.className = 'ws-status ' + state;
+  lbl.textContent = { ok:'WS 即時', connecting:'連線中…', warn:'WS 不穩', err:'輪詢備援' }[state] ?? state;
+}
+function showLoading(v) { document.getElementById('chart-loading').classList.toggle('show', v); }
+
+const fmtP = p => Number(p).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const fmtK = p => {
+  if (p >= 100000) return (p/1000).toFixed(1)+'K';
+  if (p >= 1000)   return (p/1000).toFixed(2)+'K';
+  if (p >= 1)      return p.toFixed(2);
+  return p.toFixed(6);
+};
+const fmtVol = v => {
+  if (v >= 1e9) return (v/1e9).toFixed(2)+'B';
+  if (v >= 1e6) return (v/1e6).toFixed(2)+'M';
+  if (v >= 1e3) return (v/1e3).toFixed(2)+'K';
+  return v.toFixed(0);
+};
+
+// ══════════════════════════════════════════════
+//  Symbol Change
+// ══════════════════════════════════════════════
+function onSymbolChange() {
+  currentSymbol = document.getElementById('sel-symbol').value;
+  prevPx = null; currentPrice = null;
+  clearTimeout(wsTimer);
+  if (ws) { try { ws.close(); } catch(e){} ws = null; }
+  setWsState('connecting');
+  if (candleSeries) { candleSeries.setData([]); candleSeries.setMarkers([]); }
+  if (volumeSeries) volumeSeries.setData([]);
+  if (emaSeries)    emaSeries.setData([]);
+  if (bbUpperSeries) bbUpperSeries.setData([]);
+  if (bbMidSeries)   bbMidSeries.setData([]);
+  if (bbLowerSeries) bbLowerSeries.setData([]);
+  showLoading(true);
+  loadKlines(currentSymbol, currentInterval, currentLimit, true);
+  load24h(currentSymbol);
+  connectWS(currentSymbol, currentInterval);
+  refreshSuggest();
+  if (ordersTab === 'pending') fetchOpenOrders(); else fetchRecentFills();
+}
+
+// ══════════════════════════════════════════════
+//  Boot
+// ══════════════════════════════════════════════
+async function boot() {
+  initChart();
+  connectLogWs();
+  measureLatency();
+
+  await Promise.all([
+    loadKlines(currentSymbol, currentInterval, currentLimit, true),
+    load24h(currentSymbol),
+    loadHistory(),
+    refreshSuggest(),
+    fetchBotStatus(),
+    fetchBalance(),
+  ]);
+
+  connectWS(currentSymbol, currentInterval);
+  fetchOpenOrders();
+  calcQtyFromInvestment();
+
+  // Polling timers
+  setInterval(refreshSuggest,  60_000);
+  setInterval(fetchBotStatus,  15_000);
+  setInterval(load24h.bind(null, currentSymbol), 30_000);
+  setInterval(fetchBalance,    60_000);
+  setInterval(measureLatency,  10_000);
+  setInterval(() => {
+    if (ordersTab === 'pending') fetchOpenOrders(); else fetchRecentFills();
+  }, 5_000);
+}
+
+// ══════════════════════════════════════════════
+//  Entry Point
+// ══════════════════════════════════════════════
+(async function main() {
+  // Check auth first; if needed, login modal blocks and calls boot() after login
+  const r = await fetch('/api/ping').catch(() => null);
+  if (r && r.status === 401) {
+    // Need auth — show login modal, boot() called after successful login
+    showLoginModal();
+  } else {
+    // No auth or already authenticated
+    await boot();
+  }
+})();
+</script>
+</body>
+</html>
