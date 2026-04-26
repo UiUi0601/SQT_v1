@@ -2,13 +2,21 @@
 quant_system/exchange/websocket_client.py -- 幣安三業務線 User Data Stream
 
 支援 SPOT / FUTURES / MARGIN 三條串流，Listen Key 每 30 分鐘自動 PUT 保活。
+
+修改記錄（TLS SNI / 簽章統一）：
+  - _connect_and_stream：使用 ssl.create_default_context() + 明確 server_hostname，
+    符合 2026 TLS SNI 規範，解決無數據流問題
+  - 新增 async_client 參數：持有 AsyncExchangeClient 實例供 REST 補單同步使用
+  - 移除 _signed_get 同步方法：簽章邏輯統一由 AsyncExchangeClient._sign() 負責，
+    確保 HMAC-SHA256 與時間偏移 (time_offset) 和主客戶端完全一致
+  - _sync_open_orders_rest：改呼叫 async_client 的對應方法（含 time_offset）
 """
 from __future__ import annotations
-import asyncio, hashlib, hmac, json, logging, queue, threading, time
+import asyncio, json, logging, queue, ssl, threading, time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 log = logging.getLogger(__name__)
 
@@ -86,12 +94,21 @@ class BinanceUserStream:
     """幣安 User Data Stream WebSocket 客戶端（三業務線）。"""
 
     def __init__(self, api_key, api_secret, market=StreamMarket.SPOT,
-                 testnet=False, max_queue=500, isolated_symbol=None):
+                 testnet=False, max_queue=500, isolated_symbol=None,
+                 async_client=None):
+        """
+        Parameters
+        ----------
+        async_client : AsyncExchangeClient（選用）
+            若傳入，斷線重連時 REST 補單同步將透過它執行，
+            確保 HMAC 簽章邏輯與時間偏移和主客戶端一致。
+        """
         self._api_key         = api_key
         self._api_secret      = api_secret
         self._market          = market
         self._testnet         = testnet
         self._isolated_symbol = isolated_symbol
+        self._async_client    = async_client   # AsyncExchangeClient 實例（可為 None）
         self._queue           = queue.Queue(maxsize=max_queue)
         self._status          = StreamStatus(market=market.value)
         self._stop_event      = threading.Event()
@@ -178,13 +195,24 @@ class BinanceUserStream:
             raise RuntimeError(f"[WS-{self._market.value}] 無法取得 Listen Key")
         self._status.listen_key = listen_key
 
-        ep_map = _WS_TESTNET if self._testnet else _WS_ENDPOINTS
-        url    = f"{ep_map[self._market]}{listen_key}"
+        ep_map   = _WS_TESTNET if self._testnet else _WS_ENDPOINTS
+        url      = f"{ep_map[self._market]}{listen_key}"
         log.info(f"[WS-{self._market.value}] 連接至 {url[:70]}...")
+
+        # TLS SNI：明確傳入 server_hostname，符合 2026 TLS 規範
+        ssl_ctx  = ssl.create_default_context()
+        hostname = urlparse(url).hostname or ""
 
         keepalive_task = asyncio.create_task(self._keepalive_listen_key(listen_key))
         try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=10, close_timeout=5) as ws:
+            async with websockets.connect(
+                url,
+                ssl=ssl_ctx,
+                server_hostname=hostname,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=5,
+            ) as ws:
                 self._status.connected     = True
                 self._status.last_msg_time = time.time()
                 log.info(f"[WS-{self._market.value}] 連線成功")
@@ -231,12 +259,21 @@ class BinanceUserStream:
             pass
 
     async def _sync_open_orders_rest(self):
+        """
+        斷線重連後透過 REST 補抓 OPEN 訂單。
+        若持有 AsyncExchangeClient 實例則透過它呼叫（簽章邏輯與時間偏移統一）；
+        否則跳過（避免重複維護 HMAC 邏輯）。
+        """
+        if self._async_client is None:
+            log.debug(f"[WS-{self._market.value}] 無 async_client，跳過 REST 補單同步")
+            return
         try:
-            url = ("https://fapi.binance.com/fapi/v1/openOrders"
-                   if self._market == StreamMarket.FUTURES
-                   else "https://api.binance.com/api/v3/openOrders")
-            orders = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self._signed_get(url))
+            if self._market == StreamMarket.FUTURES:
+                orders = await self._async_client.get_futures_open_orders()
+            elif self._market == StreamMarket.MARGIN:
+                orders = await self._async_client.get_margin_open_orders()
+            else:
+                orders = await self._async_client.get_open_orders()
             log.info(f"[WS-{self._market.value}] REST 同步：{len(orders)} 筆 OPEN 訂單")
         except Exception as e:
             log.warning(f"[WS-{self._market.value}] REST 同步失敗: {e}")
@@ -332,13 +369,5 @@ class BinanceUserStream:
             for task in asyncio.all_tasks(self._loop):
                 task.cancel()
 
-    def _signed_get(self, url):
-        import urllib.request
-        ts     = int(time.time() * 1000)
-        params = {"timestamp": ts}
-        query  = urlencode(params)
-        sig    = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-        full_url = f"{url}?{query}&signature={sig}"
-        req = urllib.request.Request(full_url, headers={"X-MBX-APIKEY": self._api_key})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
+    # _signed_get 已移除：簽章邏輯統一交由 AsyncExchangeClient._sign() 負責，
+    # 確保時間偏移 (time_offset) 與 HMAC-SHA256 與主客戶端完全一致。

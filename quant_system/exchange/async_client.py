@@ -5,12 +5,16 @@ quant_system/exchange/async_client.py -- 幣安非同步客戶端（三業務線
   SPOT    -> https://api.binance.com
   FUTURES -> https://fapi.binance.com        (U本位永續合約)
   MARGIN  -> https://api.binance.com/sapi/v1 (槓桿交易)
+
+修改記錄（TLS / 時間偏移）：
+  - 新增 sync_time()：啟動時對齊幣安伺服器時間，計算 _time_offset (ms)
+  - _sign() 中 timestamp 加上 _time_offset，確保簽章不因本機時鐘偏移而被拒
 """
 from __future__ import annotations
 import asyncio, hashlib, hmac, json, logging, os, threading, time
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 log = logging.getLogger(__name__)
 
@@ -80,14 +84,15 @@ class AsyncExchangeClient:
                  market=MarketType.SPOT, testnet=False, timeout=_TIMEOUT_SEC):
         if not _AIOHTTP_AVAILABLE:
             raise ImportError("aiohttp 未安裝，請執行：pip install aiohttp")
-        self._api_key    = api_key    or os.getenv("BINANCE_API_KEY",    "")
-        self._api_secret = api_secret or os.getenv("BINANCE_API_SECRET", "")
-        self._market     = market
-        self._testnet    = testnet
-        self._timeout    = aiohttp.ClientTimeout(total=timeout)
-        self._session    = None
-        url_map          = _TESTNET_URLS if testnet else _BASE_URLS
-        self._base_url   = url_map[market]
+        self._api_key      = api_key    or os.getenv("BINANCE_API_KEY",    "")
+        self._api_secret   = api_secret or os.getenv("BINANCE_API_SECRET", "")
+        self._market       = market
+        self._testnet      = testnet
+        self._timeout      = aiohttp.ClientTimeout(total=timeout)
+        self._session      = None
+        self._time_offset: int = 0   # 本機時間與幣安伺服器的偏移（毫秒）
+        url_map            = _TESTNET_URLS if testnet else _BASE_URLS
+        self._base_url     = url_map[market]
 
     async def __aenter__(self):
         await self.open(); return self
@@ -105,6 +110,30 @@ class AsyncExchangeClient:
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
+
+    async def sync_time(self) -> int:
+        """
+        同步幣安伺服器時間，計算本機偏移量（毫秒）。
+
+        做法：記錄請求前後本機時間取中間值，與伺服器 serverTime 相減。
+        後續 _sign() 中 timestamp = local_ms + self._time_offset。
+
+        建議：在 open() 之後、首次簽名 API 呼叫之前執行一次。
+        """
+        await self._ensure_session()
+        path = "/fapi/v1/time" if self._market == MarketType.FUTURES else "/api/v3/time"
+        local_before = int(time.time() * 1000)
+        data = await self._get(path)
+        local_after  = int(time.time() * 1000)
+        server_time  = int(data.get("serverTime", 0))
+        local_mid    = (local_before + local_after) // 2
+        self._time_offset = server_time - local_mid
+        log.info(
+            f"[AsyncClient-{self._market.value}] 時間同步完成，"
+            f"offset={self._time_offset:+d} ms "
+            f"（server={server_time}, local_mid={local_mid}）"
+        )
+        return self._time_offset
 
     # ── SPOT 公開 API ─────────────────────────────────────
     async def get_ticker(self, symbol):
@@ -299,7 +328,8 @@ class AsyncExchangeClient:
 
     def _sign(self, params):
         params = dict(params)
-        params["timestamp"] = int(time.time() * 1000)
+        # 加上伺服器時間偏移，確保 timestamp 與幣安伺服器同步
+        params["timestamp"] = int(time.time() * 1000) + self._time_offset
         query = urlencode(params)
         sig   = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
         params["signature"] = sig
