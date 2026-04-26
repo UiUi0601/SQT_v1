@@ -51,9 +51,16 @@ RUN_ENV["PYTHONIOENCODING"] = "utf-8"
 # ════════════════════════════════════════════════════════════
 def _is_running(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
+        import psutil
+        p = psutil.Process(pid)
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    except Exception:
         return False
 
 
@@ -84,6 +91,33 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
 # ════════════════════════════════════════════════════════════
 # 指令
 # ════════════════════════════════════════════════════════════
+def _wait_for_port_pid(port: int, timeout: float = 12) -> int | None:
+    """等待 port 被綁定，回傳監聽該 port 的 PID；逾時回傳 None。"""
+    import socket as _sock
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        # 先確認 port 可連
+        with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+            s.settimeout(0.3)
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                time.sleep(0.4)
+                continue
+        # 用 netstat 找出監聽 PID
+        try:
+            r = subprocess.run(
+                ["netstat", "-ano"], capture_output=True, text=True, timeout=5
+            )
+            for line in r.stdout.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.strip().split()
+                    if parts and parts[-1].isdigit():
+                        return int(parts[-1])
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return None
+
+
 def start_bot() -> None:
     RUNTIME_DIR.mkdir(exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)
@@ -223,8 +257,15 @@ def start_ui() -> int:
                 preexec_fn=os.setsid,
             )
 
-    _write_pid(proc.pid, UI_PID_FILE)
-    print(f"[UI] Web UI 已啟動（背景），PID={proc.pid}")
+    # 等待 uvicorn 實際綁定 port，再從 netstat 取得真實 PID
+    _port = int(os.getenv("WEB_PORT", "8000"))
+    actual_pid = _wait_for_port_pid(_port, timeout=12)
+    if actual_pid:
+        _write_pid(actual_pid, UI_PID_FILE)
+        print(f"[UI] Web UI 已啟動（背景），PID={actual_pid}")
+    else:
+        _write_pid(proc.pid, UI_PID_FILE)
+        print(f"[UI] Web UI 已啟動（背景），PID={proc.pid}（port 尚未就緒，PID 可能不準確）")
     print(f"[UI] 日誌：{UI_LOG}")
     return 0
 
@@ -290,8 +331,23 @@ def show_status() -> None:
         if running:
             print(f"[Bot] 日誌：{BOT_LOG}")
 
+    _port = int(os.getenv("WEB_PORT", "8000"))
+    # 優先用 netstat 確認 port 是否有進程在監聽
+    import socket as _sock
+    port_alive = False
+    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        port_alive = (s.connect_ex(("127.0.0.1", _port)) == 0)
+
     ui_pid = _read_pid(UI_PID_FILE)
-    if not ui_pid:
+    if port_alive:
+        # port 有響應，從 netstat 取真實 PID
+        real_pid = _wait_for_port_pid(_port, timeout=2)
+        display_pid = real_pid or ui_pid or "?"
+        if real_pid and real_pid != ui_pid:
+            _write_pid(real_pid, UI_PID_FILE)
+        print(f"[UI] ✅ 執行中，PID={display_pid}  → http://localhost:{_port}")
+    elif not ui_pid:
         print("[UI] 未啟動")
     else:
         running = _is_running(ui_pid)

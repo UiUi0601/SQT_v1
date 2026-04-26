@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(netstat -ano)",
+      "Bash(echo \"exit:$?\")",
+      "PowerShell(netstat *)",
+      "PowerShell(Invoke-WebRequest -Uri \"http://localhost:8000/api/ping\" -TimeoutSec 5 -UseBasicParsing | Select-Object StatusCode, Content)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/grid_status\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/balance\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/recent_fills\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/ticker24h/BTCUSDT\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`nContent: $\\($r.Content.Substring\\(0, [Math]::Min\\(200, $r.Content.Length\\)\\)\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/open_orders/BTCUSDT\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(Get-Content \"C:\\\\Users\\\\hp\\\\Desktop\\\\SQT_v1\\\\.env\" | Where-Object { $_ -match \"BINANCE|API|KEY|SECRET|TOKEN\" })",
+      "PowerShell(Start-Sleep -Seconds 3; try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/balance\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/recent_fills?limit=5\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/balance\" -TimeoutSec 5 -UseBasicParsing; \"Balance OK: $\\($r.Content\\)\" } catch { \"Error: $_\" })"
+    ]
+  }
+}

@@ -53,6 +53,9 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import requests as req
 import websockets
 from fastapi import Depends, FastAPI, HTTPException, Query, Security, WebSocket, WebSocketDisconnect
@@ -149,6 +152,7 @@ def _check_auth(
         return True
     if credentials is None or credentials.credentials != CONSOLE_TOKEN:
         raise HTTPException(status_code=401, detail="未授權：請輸入正確的 CONSOLE_TOKEN")
+    return True
 
 # ════════════════════════════════════════════════════════════
 # FastAPI App
