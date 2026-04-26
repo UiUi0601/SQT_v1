@@ -41,6 +41,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Windows cp932/cp950 環境下強制 UTF-8 輸出，避免 UnicodeEncodeError
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import requests as req
 import websockets
 from fastapi import Depends, FastAPI, HTTPException, Query, Security, WebSocket, WebSocketDisconnect
@@ -942,9 +954,36 @@ async def logs_ws_stream(client: WebSocket):
 # 啟動入口
 # ════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    print("═" * 60)
-    print("  ⚡  AQT 半自動動態網格交易控制台 v3.0")
-    print("  📊  瀏覽器：http://localhost:8000")
-    print("  📖  API 文件：http://localhost:8000/docs")
-    print("═" * 60)
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
+    import socket, subprocess
+
+    _PORT = int(os.getenv("WEB_PORT", "8000"))
+
+    # 若 port 被占用，嘗試找出並終止舊進程
+    def _port_in_use(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+
+    if _port_in_use(_PORT):
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.splitlines():
+                if f":{_PORT}" in line and "LISTENING" in line:
+                    pid = line.strip().split()[-1]
+                    subprocess.run(["taskkill", "/F", "/PID", pid],
+                                   capture_output=True, timeout=5)
+                    print(f"[Web] 已終止占用 port {_PORT} 的舊進程 (PID {pid})")
+                    time.sleep(0.5)
+                    break
+        except Exception as e:
+            print(f"[Web] 無法自動釋放 port {_PORT}: {e}，請手動關閉舊進程")
+
+    print("=" * 60)
+    print("  AQT  AQT 半自動動態網格交易控制台 v3.0")
+    print(f"  >>  瀏覽器：http://localhost:{_PORT}")
+    print(f"  >>  API 文件：http://localhost:{_PORT}/docs")
+    print("=" * 60)
+    uvicorn.run(app, host="127.0.0.1", port=_PORT, reload=False)
