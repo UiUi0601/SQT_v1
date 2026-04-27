@@ -736,6 +736,43 @@
         </div>
       </div>
 
+      <!-- 市場類型 -->
+      <div id="market-settings">
+        <div class="sec-title">市場類型</div>
+        <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
+          <div class="cfg-row">
+            <label>市場</label>
+            <select id="sel-market-type" onchange="onMarketTypeChange()">
+              <option value="SPOT">🏦 現貨 (SPOT)</option>
+              <option value="MARGIN">📊 槓桿現貨 (MARGIN)</option>
+              <option value="FUTURES">🚀 合約 (FUTURES)</option>
+            </select>
+          </div>
+          <div class="cfg-row" id="row-leverage" style="display:none">
+            <label>槓桿倍數</label>
+            <div style="display:flex;align-items:center;gap:6px;flex:1">
+              <input type="range" id="inp-leverage" min="1" max="125" value="1"
+                     style="flex:1" oninput="document.getElementById('lev-disp').textContent=this.value+'x'">
+              <span id="lev-disp" style="font-size:11px;color:var(--accent);min-width:30px;text-align:right">1x</span>
+            </div>
+          </div>
+          <div class="cfg-row" id="row-margin-type" style="display:none">
+            <label>保證金模式</label>
+            <select id="sel-margin-type">
+              <option value="CROSSED">全倉 (CROSSED)</option>
+              <option value="ISOLATED">逐倉 (ISOLATED)</option>
+            </select>
+          </div>
+          <div class="cfg-row" id="row-pos-side" style="display:none">
+            <label>持倉模式</label>
+            <select id="sel-pos-side">
+              <option value="BOTH">單向持倉 (BOTH)</option>
+              <option value="HEDGE">雙向持倉 (HEDGE)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <!-- 半自動設定 -->
       <div id="semi-settings">
         <div class="sec-title">交易設定</div>
@@ -1514,6 +1551,18 @@ async function fetchBotStatus() {
       document.getElementById('bot-upper').textContent  = c.upper_price ? `$${fmtK(c.upper_price)}` : '--';
       document.getElementById('bot-lower').textContent  = c.lower_price ? `$${fmtK(c.lower_price)}` : '--';
       document.getElementById('bot-symbol-text').textContent = `${c.symbol} / ${c.grid_count} 格`;
+      // Restore market-type controls from saved config
+      if (c.market_type) {
+        document.getElementById('sel-market-type').value = c.market_type.toUpperCase();
+        onMarketTypeChange();
+      }
+      if (c.leverage) {
+        const lev = parseInt(c.leverage);
+        document.getElementById('inp-leverage').value = lev;
+        document.getElementById('lev-disp').textContent = lev + 'x';
+      }
+      if (c.margin_type) document.getElementById('sel-margin-type').value = c.margin_type.toUpperCase();
+      if (c.position_side_mode) document.getElementById('sel-pos-side').value = c.position_side_mode.toUpperCase();
     }
   } catch(e) {}
 }
@@ -1551,6 +1600,12 @@ async function saveGrid() {
     const qtyCalc = calcQtyFromInvestment();
     let payload;
 
+    const marketType    = document.getElementById('sel-market-type').value;
+    const leverage      = parseInt(document.getElementById('inp-leverage').value) || 1;
+    const marginType    = document.getElementById('sel-margin-type').value;
+    const posSideMode   = document.getElementById('sel-pos-side').value;
+    const marketFields  = { market_type: marketType, leverage, margin_type: marginType, position_side_mode: posSideMode };
+
     if (mode === 'semi') {
       payload = {
         symbol: currentSymbol, trade_mode: 'semi',
@@ -1558,6 +1613,7 @@ async function saveGrid() {
         upper_price: upperPrice, lower_price: lowerPrice, grid_count: gc,
         qty_per_grid: qtyCalc > 0 ? qtyCalc : 0.001,
         stop_loss_price: slVal,
+        ...marketFields,
       };
     } else {
       const inv2   = parseFloat(document.getElementById('inp-investment-auto').value) || 500;
@@ -1567,6 +1623,7 @@ async function saveGrid() {
         direction: document.getElementById('sel-dir-auto').value,
         upper_price: upperPrice, lower_price: lowerPrice, grid_count: 10,
         qty_per_grid: qtyAuto, stop_loss_price: 0,
+        ...marketFields,
       };
     }
 
@@ -1673,6 +1730,19 @@ function onModeChange() {
   document.getElementById('mode-card-auto').style.borderColor = !isSemi ? 'var(--accent)' : 'var(--border)';
   document.getElementById('mode-card-semi').querySelector('div').style.color = isSemi ? 'var(--accent)' : 'var(--muted)';
   document.getElementById('mode-card-auto').querySelector('div').style.color = !isSemi ? 'var(--accent)' : 'var(--muted)';
+}
+
+function onMarketTypeChange() {
+  const mt = document.getElementById('sel-market-type').value;
+  const isFutures = mt === 'FUTURES';
+  const isNotSpot = mt !== 'SPOT';
+  document.getElementById('row-leverage').style.display   = isFutures ? '' : 'none';
+  document.getElementById('row-margin-type').style.display = isNotSpot ? '' : 'none';
+  document.getElementById('row-pos-side').style.display   = isFutures ? '' : 'none';
+  if (isFutures) {
+    const lev = parseInt(document.getElementById('inp-leverage').value) || 1;
+    document.getElementById('lev-disp').textContent = lev + 'x';
+  }
 }
 
 // ══════════════════════════════════════════════
