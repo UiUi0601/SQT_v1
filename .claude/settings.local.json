@@ -17,7 +17,8 @@
       "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/balance\" -TimeoutSec 5 -UseBasicParsing; \"Balance OK: $\\($r.Content\\)\" } catch { \"Error: $_\" })",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/api/ping)",
       "Bash(python -m py_compile crypto_main_grid.py)",
-      "Bash(python -m py_compile web_ui.py)"
+      "Bash(python -m py_compile web_ui.py)",
+      "Bash(python *)"
     ]
   }
 }

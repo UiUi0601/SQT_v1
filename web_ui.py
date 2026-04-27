@@ -28,6 +28,10 @@ v6 新增：
   GET  /api/pending_signals  🔒      → 列出待確認訊號
   POST /api/confirm_trade    🔒      → 確認或拒絕 SEMI_AUTO 訊號
   POST /api/add_symbol       🔒      → 動態新增幣種（無需重啟）
+  GET  /api/system_lock_status       → 查詢系統安全鎖狀態
+  POST /api/unlock_system    🔒      → 密碼解鎖系統安全鎖（回傳 HMAC Token）
+  POST /api/auto_unlock               → Token 自動恢復解鎖（頁面重整用）
+  POST /api/lock_system      🔒      → 重新鎖定系統安全鎖
   WS   /ws/signals                   → SEMI_AUTO 訊號即時推播
   WS   /ws/kline/{symbol}            → K 線 WebSocket 代理
   WS   /ws/logs                      → 即時日誌串流
@@ -35,6 +39,7 @@ v6 新增：
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import logging
@@ -155,6 +160,42 @@ def _signed_post(path: str, params: dict | None = None) -> req.Response:
         timeout=10,
     )
 
+# ════════════════════════════════════════════════════════════
+# 系統安全鎖：無狀態 HMAC 解鎖 Token（24h 有效）
+# ════════════════════════════════════════════════════════════
+# UNLOCK_SECRET 必須在環境變數中設定；未設定時使用隨機值（重啟後 Token 作廢）
+_UNLOCK_SECRET: str = os.getenv("UNLOCK_SECRET", "") or base64.b64encode(
+    hashlib.sha256(os.urandom(32)).digest()
+).decode()
+
+
+def _make_unlock_token() -> str:
+    """
+    生成 24h 有效的解鎖 Token（HMAC-SHA256 stateless）。
+    格式：base64url( "{expiry_ts}:{hmac_sig}" )
+    """
+    expiry = str(int(time.time()) + 86400)
+    sig = hmac.new(_UNLOCK_SECRET.encode(), expiry.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{expiry}:{sig}".encode()).decode().rstrip("=")
+
+
+def _verify_unlock_token(token: str) -> bool:
+    """驗證 HMAC Token；過期或格式錯誤均返回 False。"""
+    try:
+        # Restore padding for base64
+        padded = token + "=" * (4 - len(token) % 4)
+        payload = base64.urlsafe_b64decode(padded.encode()).decode()
+        expiry_str, sig = payload.split(":", 1)
+        if int(time.time()) > int(expiry_str):
+            return False
+        expected = hmac.new(
+            _UNLOCK_SECRET.encode(), expiry_str.encode(), hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
 # ── TradeDB 初始化（統一讀寫 trading_bot.db）────────────────
 db_abs_path = str(Path(__file__).parent / "trading_bot.db")
 trade_db = TradeDB(db_path=db_abs_path)
@@ -262,6 +303,14 @@ class AddSymbolRequest(BaseModel):
     trade_mode:          str   = "auto"
 
 
+class UnlockRequest(BaseModel):
+    password: str
+
+
+class AutoUnlockRequest(BaseModel):
+    token: str
+
+
 # ════════════════════════════════════════════════════════════
 # 技術指標工具函式
 # ════════════════════════════════════════════════════════════
@@ -318,15 +367,17 @@ def _calc_hv(klines: list, period: int = 30) -> float:
 
 
 def _detect_regime(klines: list, atr: float, price: float) -> str:
-    """判斷市場狀態：RANGING / TRENDING / HIGH_VOL"""
-    _, bb_mid, _ = _calc_bollinger(klines)
-    bb_u, _, bb_l = _calc_bollinger(klines)
-    bb_width_pct = (bb_u - bb_l) / bb_mid if bb_mid > 0 else 0
+    """判斷市場狀態：RANGING / TRENDING_BULL / TRENDING_BEAR / HIGH_VOL"""
+    bb_u, bb_mid, bb_l = _calc_bollinger(klines)
     atr_pct      = atr / price if price > 0 else 0
-    price_vs_mid = abs(price - bb_mid) / bb_mid if bb_mid > 0 else 0
+    price_vs_mid = (price - bb_mid) / bb_mid if bb_mid > 0 else 0
 
-    if atr_pct > 0.03:        return "HIGH_VOL"
-    if price_vs_mid > 0.025:  return "TRENDING"
+    if atr_pct > 0.03:
+        return "HIGH_VOL"
+    if price_vs_mid > 0.025:
+        return "TRENDING_BULL"
+    if price_vs_mid < -0.025:
+        return "TRENDING_BEAR"
     return "RANGING"
 
 
@@ -339,9 +390,11 @@ def _profit_pct(spacing: float, price: float) -> float:
 
 def _build_strategies(price: float, atr: float, bb_u: float, bb_l: float,
                       bb_mid: float, regime: str) -> dict:
-    """依市場狀態產生保守 / 標準 / 積極三組策略建議"""
+    """依市場狀態產生保守 / 標準 / 積極三組策略建議。
+    TRENDING_BEAR 時額外加入做空方向欄位 side='SHORT'。
+    """
+    is_bearish = regime == "TRENDING_BEAR"
 
-    # ── 各策略的區間倍數與格數 ────────────────────────────────
     configs = {
         "conservative": {
             "name": "保守策略",
@@ -369,21 +422,26 @@ def _build_strategies(price: float, atr: float, bb_u: float, bb_l: float,
         },
     }
 
-    # HIGH_VOL 模式：全部放寬 20%
-    if regime == "HIGH_VOL":
+    # HIGH_VOL / TRENDING_BEAR 模式：區間放寬 20%
+    if regime in ("HIGH_VOL", "TRENDING_BEAR"):
         for k in configs:
-            mid = (configs[k]["upper"] + configs[k]["lower"]) / 2
+            mid  = (configs[k]["upper"] + configs[k]["lower"]) / 2
             half = (configs[k]["upper"] - configs[k]["lower"]) / 2 * 1.2
             configs[k]["upper"] = mid + half
             configs[k]["lower"] = mid - half
 
     result = {}
     for key, cfg in configs.items():
-        upper  = max(round(cfg["upper"], 2), price * 1.001)
-        lower  = min(round(cfg["lower"], 2), price * 0.999)
-        count  = cfg["count"]
+        if is_bearish:
+            # 做空：區間錨定在當前價下方（price 為上緣）
+            upper   = max(round(cfg["upper"], 2), price * 1.001)
+            lower   = min(round(cfg["lower"], 2), price * 0.999)
+        else:
+            upper   = max(round(cfg["upper"], 2), price * 1.001)
+            lower   = min(round(cfg["lower"], 2), price * 0.999)
+        count   = cfg["count"]
         spacing = (upper - lower) / count
-        result[key] = {
+        entry = {
             "name":         cfg["name"],
             "emoji":        cfg["emoji"],
             "desc":         cfg["desc"],
@@ -394,6 +452,13 @@ def _build_strategies(price: float, atr: float, bb_u: float, bb_l: float,
             "spacing_pct":  f"{spacing / price * 100:.3f}%",
             "profit_pct":   f"{_profit_pct(spacing, price):.3f}%",
         }
+        if is_bearish:
+            entry["side"]      = "SHORT"
+            entry["direction"] = "做空 (Short)"
+        else:
+            entry["side"]      = "LONG"
+            entry["direction"] = "做多 (Long)"
+        result[key] = entry
     return result
 
 
@@ -1276,6 +1341,77 @@ async def add_symbol(
         "symbol":  sym,
         "message": f"✅ {sym} 已新增；機器人將在下次 tick 啟動（通常 30 秒內）",
     }
+
+
+# ════════════════════════════════════════════════════════════
+# 系統安全鎖 API
+# ════════════════════════════════════════════════════════════
+
+@app.get("/api/system_lock_status")
+async def system_lock_status():
+    """回傳目前系統鎖定狀態（不需身份驗證；供頁面初始化輪詢）。"""
+    try:
+        unlocked = trade_db.get_system_lock()
+    except Exception as e:
+        log.warning(f"[system_lock_status] DB 讀取失敗: {e}")
+        unlocked = False
+    return {"is_unlocked": unlocked}
+
+
+@app.post("/api/unlock_system")
+async def unlock_system(
+    body: UnlockRequest,
+    _: bool = Depends(_check_auth),
+):
+    """
+    以 UI 登入密碼解鎖系統安全鎖。
+    成功後呼叫 set_system_lock(True) 並回傳 24h HMAC Token。
+    """
+    _, password_hash = _load_credentials()
+    if password_hash and not verify_password(body.password, password_hash):
+        raise HTTPException(status_code=403, detail="密碼錯誤，無法解鎖系統")
+
+    try:
+        trade_db.set_system_lock(True)
+    except Exception as e:
+        log.error(f"[unlock_system] DB 寫入失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"DB 寫入失敗: {e}")
+
+    token = _make_unlock_token()
+    log.info("[unlock_system] 系統已解鎖，發放 Token")
+    return {"ok": True, "unlock_token": token, "message": "系統已解鎖，執行階段啟用"}
+
+
+@app.post("/api/auto_unlock")
+async def auto_unlock(body: AutoUnlockRequest):
+    """
+    瀏覽器頁面重整時以 localStorage 保存的 Token 自動恢復解鎖狀態。
+    不需 Bearer 身份驗證，但需通過 HMAC 驗證（Token 24h 有效）。
+    """
+    if not _verify_unlock_token(body.token):
+        raise HTTPException(status_code=401, detail="Token 無效或已過期，請重新解鎖")
+
+    try:
+        trade_db.set_system_lock(True)
+    except Exception as e:
+        log.error(f"[auto_unlock] DB 寫入失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"DB 寫入失敗: {e}")
+
+    log.info("[auto_unlock] Token 驗證通過，自動恢復解鎖狀態")
+    return {"ok": True, "is_unlocked": True}
+
+
+@app.post("/api/lock_system")
+async def lock_system(_: bool = Depends(_check_auth)):
+    """重新鎖定系統安全鎖（需 UI 身份驗證）。"""
+    try:
+        trade_db.set_system_lock(False)
+    except Exception as e:
+        log.error(f"[lock_system] DB 寫入失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"DB 寫入失敗: {e}")
+
+    log.info("[lock_system] 系統已鎖定")
+    return {"ok": True, "is_unlocked": False, "message": "系統已鎖定，執行階段暫停"}
 
 
 # ════════════════════════════════════════════════════════════

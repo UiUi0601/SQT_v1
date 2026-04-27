@@ -174,6 +174,26 @@ class GridAlerts:
             f"時間：{self._ts()}"
         )
 
+    def notify_semi_signal(
+        self,
+        symbol:     str,
+        side:       str,
+        price:      float,
+        signal_id:  str,
+        atr:        float = 0.0,
+        upper:      float = 0.0,
+        lower:      float = 0.0,
+        expires_in: int   = 30,
+    ) -> None:
+        side_icon = "📈" if side == "BUY" else "📉"
+        self._push(
+            f"🎯 <b>SEMI_AUTO 訊號待確認</b>  {symbol}\n"
+            f"{side_icon} 方向：{side}  價格：{price:.4f}\n"
+            f"網格範圍：{lower:.4f} ~ {upper:.4f}  ATR：{atr:.4f}\n"
+            f"請在 {expires_in}s 內至 UI 面板確認\n"
+            f"ID：<code>{signal_id[:8]}…</code>  {self._ts()}"
+        )
+
 
 class AlertSystem:
     """發送交易訊號通知；若沒設定 Telegram token 則僅印 log。"""

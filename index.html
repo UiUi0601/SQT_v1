@@ -516,6 +516,34 @@
 <!-- ════ Toast Container ════ -->
 <div id="toast-container"></div>
 
+<!-- ════ Unlock Modal ════ -->
+<div id="unlock-overlay" class="modal-overlay">
+  <div class="modal" style="max-width:340px">
+    <div class="modal-title">🔓 解鎖系統安全鎖</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">輸入 UI 登入密碼以解除執行封鎖（Token 24h 有效）</div>
+    <input type="password" id="unlock-pwd-inp" placeholder="UI 密碼…"
+           style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:13px;box-sizing:border-box;margin-bottom:8px"
+           onkeydown="if(event.key==='Enter')doUnlockSystem()">
+    <div id="unlock-err" style="font-size:10px;color:var(--sell);min-height:14px;margin-bottom:6px"></div>
+    <div class="modal-btns">
+      <button class="modal-btn" onclick="closeUnlockModal()">取消</button>
+      <button class="modal-btn primary" onclick="doUnlockSystem()">解鎖</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ Signal Detail Modal ════ -->
+<div id="signal-detail-overlay" class="modal-overlay">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-title" id="sig-detail-title">訊號詳情</div>
+    <div id="sig-detail-body" style="font-size:11px;color:var(--text);line-height:1.9"></div>
+    <div class="modal-btns" style="margin-top:12px">
+      <button class="modal-btn" onclick="document.getElementById('signal-detail-overlay').classList.remove('show')">關閉</button>
+      <button class="modal-btn primary" id="sig-detail-confirm-btn">✅ 確認下單</button>
+    </div>
+  </div>
+</div>
+
 <!-- ════ Header ════ -->
 <header>
   <div class="logo">⚡ AQT</div>
@@ -873,6 +901,25 @@
         </div>
       </div>
 
+      <!-- ═ 系統安全鎖 ═ -->
+      <div>
+        <div class="sec-title" style="display:flex;align-items:center;gap:6px">
+          系統安全鎖
+          <span id="lock-badge" style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(239,83,80,.15);color:var(--sell);font-weight:600">🔒 已鎖定</span>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.6">
+          安全鎖關閉時，機器人 Observation 持續運行但所有下單執行均暫停。
+        </div>
+        <div class="btn-row" style="margin-top:0">
+          <button class="btn-start" id="btn-unlock" onclick="showUnlockModal()" style="background:var(--lower);font-size:11px;padding:6px 10px">
+            🔓 解鎖系統
+          </button>
+          <button class="btn-stop" id="btn-lock" onclick="doLockSystem()" style="font-size:11px;padding:6px 10px">
+            🔒 重新鎖定
+          </button>
+        </div>
+      </div>
+
       <!-- ═ SEMI_AUTO 訊號確認面板 ═ -->
       <div id="signal-panel">
         <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between">
@@ -955,7 +1002,7 @@
 // ══════════════════════════════════════════════
 //  Auth & Token
 // ══════════════════════════════════════════════
-let _authToken = sessionStorage.getItem('aqt_token') || '';
+let _authToken = localStorage.getItem('aqt_token') || '';
 let _authRequired = false;
 
 async function initAuth() {
@@ -984,7 +1031,7 @@ async function doLogin() {
   const r = await fetch('/api/ping', { headers: { Authorization: `Bearer ${tok}` } });
   if (r.ok) {
     _authToken = tok;
-    sessionStorage.setItem('aqt_token', tok);
+    localStorage.setItem('aqt_token', tok);
     hideLoginModal();
     boot();
   } else {
@@ -1976,7 +2023,7 @@ let _signalTimers = {};   // signal_id → countdown interval
 async function fetchExecutionMode() {
   // Reflect the server-side env var on page load (best-effort; no dedicated GET endpoint)
   // We infer from any stored sessionStorage key set by a prior setExecutionMode call.
-  const stored = sessionStorage.getItem('aqt_exec_mode');
+  const stored = localStorage.getItem('aqt_exec_mode');
   if (stored) applyExecModeUI(stored);
 }
 
@@ -1989,7 +2036,7 @@ async function setExecutionMode(mode) {
     const d = await r.json();
     if (!r.ok) { showToast(`切換失敗: ${d.detail || d.error}`, 'error'); return; }
     _execMode = mode;
-    sessionStorage.setItem('aqt_exec_mode', mode);
+    localStorage.setItem('aqt_exec_mode', mode);
     applyExecModeUI(mode);
     showToast(`執行模式已切換為 ${mode}（重啟機器人後生效）`, 'success');
   } catch(e) {
@@ -2101,6 +2148,7 @@ function _renderFromCache() {
         <div class="signal-btns">
           <button class="signal-btn-confirm" onclick="confirmSignal('${sig.signal_id}', true)">✅ 確認下單</button>
           <button class="signal-btn-reject"  onclick="confirmSignal('${sig.signal_id}', false)">❌ 拒絕</button>
+          <button class="btn-apply" onclick="showSignalDetail('${sig.signal_id}')" style="font-size:9px;padding:2px 7px">🔍 詳情</button>
         </div>
       </div>`;
   }).join('');
@@ -2237,6 +2285,170 @@ function onSymbolChange() {
 }
 
 // ══════════════════════════════════════════════
+//  System Lock
+// ══════════════════════════════════════════════
+let _isUnlocked = false;
+
+function showUnlockModal() {
+  document.getElementById('unlock-pwd-inp').value = '';
+  document.getElementById('unlock-err').textContent = '';
+  document.getElementById('unlock-overlay').classList.add('show');
+  setTimeout(() => document.getElementById('unlock-pwd-inp').focus(), 80);
+}
+function closeUnlockModal() {
+  document.getElementById('unlock-overlay').classList.remove('show');
+}
+
+async function doUnlockSystem() {
+  const pwd = document.getElementById('unlock-pwd-inp').value;
+  if (!pwd) { document.getElementById('unlock-err').textContent = '請輸入密碼'; return; }
+  try {
+    const r = await authFetch('/api/unlock_system', {
+      method: 'POST',
+      body: JSON.stringify({ password: pwd }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      document.getElementById('unlock-err').textContent = d.detail || '解鎖失敗';
+      return;
+    }
+    if (d.unlock_token) localStorage.setItem('aqt_unlock_token', d.unlock_token);
+    closeUnlockModal();
+    applyLockUI(true);
+    showToast('🔓 系統已解鎖，執行階段啟用', 'success');
+  } catch(e) {
+    document.getElementById('unlock-err').textContent = e.message;
+  }
+}
+
+async function doLockSystem() {
+  try {
+    const r = await authFetch('/api/lock_system', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { showToast(`鎖定失敗: ${d.detail || d.error}`, 'error'); return; }
+    localStorage.removeItem('aqt_unlock_token');
+    applyLockUI(false);
+    showToast('🔒 系統已鎖定，執行暫停', 'info');
+  } catch(e) {
+    showToast(`鎖定失敗: ${e.message}`, 'error');
+  }
+}
+
+async function fetchSystemLockStatus() {
+  try {
+    const r = await fetch('/api/system_lock_status');
+    if (!r.ok) return;
+    const d = await r.json();
+    applyLockUI(!!d.is_unlocked);
+  } catch(e) {}
+}
+
+async function tryAutoUnlock() {
+  const token = localStorage.getItem('aqt_unlock_token');
+  if (!token) return;
+  try {
+    const r = await fetch('/api/auto_unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (r.ok) {
+      applyLockUI(true);
+    } else {
+      localStorage.removeItem('aqt_unlock_token');
+      applyLockUI(false);
+    }
+  } catch(e) {}
+}
+
+function applyLockUI(unlocked) {
+  _isUnlocked = unlocked;
+  const badge   = document.getElementById('lock-badge');
+  const btnLock = document.getElementById('btn-lock');
+  const btnUnlk = document.getElementById('btn-unlock');
+  if (!badge) return;
+  if (unlocked) {
+    badge.textContent = '🔓 已解鎖';
+    badge.style.background = 'rgba(38,166,154,.15)';
+    badge.style.color = 'var(--lower)';
+  } else {
+    badge.textContent = '🔒 已鎖定';
+    badge.style.background = 'rgba(239,83,80,.15)';
+    badge.style.color = 'var(--sell)';
+  }
+  if (btnLock) btnLock.style.display = unlocked ? '' : 'none';
+  if (btnUnlk) btnUnlk.style.display = unlocked ? 'none' : '';
+}
+
+// ══════════════════════════════════════════════
+//  Signal Detail Modal
+// ══════════════════════════════════════════════
+let _klinesCache = [];   // latest raw klines for RSI/EMA calc
+
+function _calcRSIFromCache(period = 14) {
+  const closes = _klinesCache.map(k => parseFloat(k.close ?? k[4]));
+  if (closes.length < period + 1) return null;
+  const recent = closes.slice(-period - 1);
+  let gains = 0, losses = 0;
+  for (let i = 1; i < recent.length; i++) {
+    const diff = recent[i] - recent[i - 1];
+    if (diff > 0) gains += diff; else losses -= diff;
+  }
+  const avgG = gains / period, avgL = losses / period;
+  if (avgL === 0) return 100;
+  return Math.round(100 - 100 / (1 + avgG / avgL));
+}
+
+function _estimateLiqPrice(price, leverage, side) {
+  if (!leverage || leverage <= 1) return null;
+  // Simplified: distance ≈ 1/leverage × price (ignoring maintenance margin)
+  const dist = price / leverage;
+  return side === 'SHORT' ? +(price + dist).toFixed(4) : +(price - dist).toFixed(4);
+}
+
+async function showSignalDetail(signalId) {
+  const sig = _renderedSignals[signalId];
+  if (!sig) return;
+  const ind     = _parseIndicators(sig.indicator_data) || {};
+  const price   = Number(sig.price) || 0;
+  const lev     = Number(sig.leverage) || 1;
+  const side    = (sig.side || 'BUY').toUpperCase();
+  const rsi     = _calcRSIFromCache();
+  const liqEst  = _estimateLiqPrice(price, lev, side === 'BUY' ? 'LONG' : 'SHORT');
+
+  const rows = [
+    ['幣種',     sig.symbol || '--'],
+    ['方向',     side === 'BUY' ? '📈 做多 (LONG)' : '📉 做空 (SHORT)'],
+    ['價格',     `$${price.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:4})}`],
+    ['市場',     `${sig.market_type || 'SPOT'} × ${lev}x`],
+    ['ATR',      ind.atr   ? Number(ind.atr).toFixed(4)  : '--'],
+    ['EMA 200',  ind.ema200 && ind.ema200 > 0 ? `$${Number(ind.ema200).toFixed(2)}` : '--'],
+    ['網格上限', ind.upper  ? `$${Number(ind.upper).toFixed(4)}`  : '--'],
+    ['網格下限', ind.lower  ? `$${Number(ind.lower).toFixed(4)}`  : '--'],
+    ['RSI(14)',  rsi !== null ? rsi : '--'],
+    ['估算強平', liqEst ? `$${liqEst}` : '無槓桿'],
+    ['到期',     sig.expires_at ? `${Math.max(0, Math.round(sig.expires_at - Date.now()/1000))}s` : '--'],
+  ];
+
+  document.getElementById('sig-detail-title').textContent =
+    `訊號詳情 — ${sig.symbol || ''} ${side}`;
+  document.getElementById('sig-detail-body').innerHTML =
+    rows.map(([k, v]) =>
+      `<div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding:3px 0">
+         <span style="color:var(--muted)">${k}</span>
+         <span style="font-weight:600">${v}</span>
+       </div>`
+    ).join('');
+
+  const confirmBtn = document.getElementById('sig-detail-confirm-btn');
+  confirmBtn.onclick = () => {
+    document.getElementById('signal-detail-overlay').classList.remove('show');
+    confirmSignal(signalId, true);
+  };
+  document.getElementById('signal-detail-overlay').classList.add('show');
+}
+
+// ══════════════════════════════════════════════
 //  Boot
 // ══════════════════════════════════════════════
 async function boot() {
@@ -2244,11 +2456,17 @@ async function boot() {
   connectLogWs();
   measureLatency();
 
-  // Restore execution mode from session storage & hide signal panel until SEMI_AUTO active
+  // Restore execution mode from localStorage & hide signal panel until SEMI_AUTO active
   fetchExecutionMode();
-  // Hide signal panel by default; shown when SEMI_AUTO is active
   const sigPanel = document.getElementById('signal-panel');
   if (sigPanel) sigPanel.style.display = 'none';
+
+  // Initialise lock UI to locked; then auto-restore from localStorage token or server state
+  applyLockUI(false);
+  tryAutoUnlock().then(() => {
+    // If token was invalid/absent, fall back to server state
+    if (!_isUnlocked) fetchSystemLockStatus();
+  });
 
   await Promise.all([
     loadKlines(currentSymbol, currentInterval, currentLimit, true),
@@ -2270,10 +2488,10 @@ async function boot() {
   setInterval(load24h.bind(null, currentSymbol), 30_000);
   setInterval(fetchBalance,    60_000);
   setInterval(measureLatency,  10_000);
+  setInterval(fetchSystemLockStatus, 30_000);
   setInterval(() => {
     if (ordersTab === 'pending') fetchOpenOrders(); else fetchRecentFills();
   }, 5_000);
-  // Refresh pending signals every 5s when SEMI_AUTO is active
   setInterval(() => {
     if (_execMode === 'SEMI_AUTO') fetchPendingSignals();
   }, 5_000);

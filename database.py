@@ -422,6 +422,12 @@ class TradeDB:
                 net_pnl      REAL NOT NULL,
                 closed_at    TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS system_status (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL DEFAULT '0',
+                updated_at TEXT
+            );
             """)
 
             # ── 遷移：為舊版 grid_config 自動補齊新欄位 ──────────
@@ -441,6 +447,12 @@ class TradeDB:
                     conn.execute(_col_sql)
                 except Exception:
                     pass  # 欄位已存在，忽略
+
+            # ── 系統安全鎖預設值（首次建立時寫入，已存在則忽略）──
+            conn.execute(
+                "INSERT OR IGNORE INTO system_status (key, value, updated_at) VALUES (?, ?, ?)",
+                ("is_unlocked", "0", _now()),
+            )
 
             existing = conn.execute("SELECT COUNT(*) FROM bot_config").fetchone()[0]
             if existing == 0:
@@ -957,10 +969,33 @@ class TradeDB:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    # ════════════════════════════════════════════════════════
+    # 系統安全鎖（全域交易開關）
+    # ════════════════════════════════════════════════════════
+    def get_system_lock(self) -> bool:
+        """Return True if trading is unlocked (is_unlocked == '1')."""
+        with _conn() as c:
+            row = c.execute(
+                "SELECT value FROM system_status WHERE key='is_unlocked'"
+            ).fetchone()
+            return bool(row and row[0] == "1")
+
+    def set_system_lock(self, unlocked: bool) -> None:
+        """Set the global trading lock. unlocked=True → bot may trade; False → all execution blocked."""
+        val = "1" if unlocked else "0"
+        ts  = _now()
+        # INSERT OR REPLACE guarantees the row exists even on a fresh DB
+        _w(lambda conn, _v=val, _ts=ts: conn.execute(
+            "INSERT OR REPLACE INTO system_status (key, value, updated_at) VALUES ('is_unlocked', ?, ?)",
+            (_v, _ts),
+        ))
+        log.info("[SystemLock] is_unlocked → %s", val)
+
     def get_db_stats(self) -> Dict:
         tables = [
             "trades", "paper_trades", "paper_equity_log",
             "grid_config", "grid_levels", "grid_trades", "pending_signals",
+            "system_status",
         ]
         stats: Dict[str, Any] = {}
         with _conn() as c:

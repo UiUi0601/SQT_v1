@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 from quant_system.grid.contract_interface import calc_liquidation_price
+
+# 強平資料最小刷新間隔（秒）— 避免每 30s tick 都打 Binance API
+_FUTURES_REFRESH_INTERVAL_SEC = float(os.getenv("FUTURES_POS_REFRESH_SEC", "60"))
 
 log = logging.getLogger(__name__)
 
@@ -154,9 +158,16 @@ class FuturesRiskMonitor(BaseRiskMonitor):
     """
     永續合約：在通用檢查之上，額外監控強平距離。
 
-    強平緩衝規則：
-      distance_pct = |current_price - liq_price| / current_price
-      若 distance_pct < liq_buffer（預設 15%） → 封鎖新下單，通知減倉
+    強平緩衝規則（使用 Binance 即時標記價格 + 實際強平價）：
+      distance_pct = |mark_price - liq_price| / mark_price
+      若 distance_pct < liq_buffer → 封鎖新下單，通知減倉
+
+    資料來源優先順序：
+      1. 即時資料（refresh_from_exchange() 每 60s 從 Binance 拉取）
+           liq_price  ← /fapi/v2/positionRisk  liquidationPrice
+           mark_price ← /fapi/v1/premiumIndex  markPrice
+      2. 公式估算（無持倉或 Binance 未回應時 fallback）
+           calc_liquidation_price(entry_price, leverage, side)
     """
 
     def __init__(self, risk_mgr, symbol: str,
@@ -165,11 +176,65 @@ class FuturesRiskMonitor(BaseRiskMonitor):
         self._leverage   = leverage
         self._liq_buffer = liq_buffer
 
+        # ── 即時倉位快取（由 refresh_from_exchange() 更新）──
+        self._liq_price:    float = 0.0   # Binance 回傳的實際強平價
+        self._mark_price:   float = 0.0   # 標記價格（防止 kline 偏差）
+        self._entry_price:  float = 0.0   # 開倉均價
+        self._pos_side:     str   = "LONG"
+        self._refreshed_at: float = 0.0   # 上次成功刷新的 Unix ts
+
+    # ── 從 Binance 拉取即時倉位資料（限速：每 60s 最多一次）──────
+    def refresh_from_exchange(self, client, symbol: str) -> None:
+        """
+        在 tick() 的 Observation 階段呼叫（Phase 1，永遠執行）。
+        透過 python-binance 同步 client 取得標記價格與強平價，
+        快取於 self._mark_price / self._liq_price / self._entry_price。
+        限速：兩次刷新間隔 < _FUTURES_REFRESH_INTERVAL_SEC 時直接跳過。
+        """
+        now = time.time()
+        if now - self._refreshed_at < _FUTURES_REFRESH_INTERVAL_SEC:
+            return  # 快取仍新鮮，不重複請求
+
+        # ① 標記價格 /fapi/v1/premiumIndex
+        try:
+            mark_data = client.futures_mark_price(symbol=symbol)
+            if isinstance(mark_data, dict):
+                mp = float(mark_data.get("markPrice", 0.0))
+                if mp > 0:
+                    self._mark_price = mp
+        except Exception as e:
+            log.debug("[FuturesRisk] mark price 取得失敗: %s", e)
+
+        # ② 倉位資料 /fapi/v2/positionRisk → 強平價 + 開倉均價
+        try:
+            positions = client.futures_position_information(symbol=symbol)
+            for pos in (positions or []):
+                qty = float(pos.get("positionAmt", 0))
+                if abs(qty) < 1e-10:
+                    continue  # 空倉跳過
+                liq_px  = float(pos.get("liquidationPrice", 0.0))
+                ent_px  = float(pos.get("entryPrice",       0.0))
+                p_side  = "LONG" if qty > 0 else "SHORT"
+                if liq_px > 0:
+                    self._liq_price   = liq_px
+                    self._entry_price = ent_px
+                    self._pos_side    = p_side
+                    break  # 取第一個有效持倉
+        except Exception as e:
+            log.debug("[FuturesRisk] position risk 取得失敗: %s", e)
+
+        self._refreshed_at = now
+        log.debug(
+            "[FuturesRisk] %s 倉位快取更新 mark=%.4f liq=%.4f entry=%.4f side=%s",
+            symbol, self._mark_price, self._liq_price,
+            self._entry_price, self._pos_side,
+        )
+
     def check(self, current_price: float = 0.0,
               proposed_usdt: float = 0.0,
-              total_equity: float = 1.0,
-              entry_price: float = 0.0,
-              side: str = "LONG",
+              total_equity:  float = 1.0,
+              entry_price:   float = 0.0,
+              side:          str   = "LONG",
               **kwargs) -> CheckResult:
 
         base = self._common_checks(
@@ -179,38 +244,63 @@ class FuturesRiskMonitor(BaseRiskMonitor):
         if not base.ok:
             return base
 
-        # 強平距離檢查
-        if entry_price > 0 and current_price > 0 and self._leverage > 1:
-            liq_px = calc_liquidation_price(
-                entry_price=entry_price,
+        # ── 決定有效的標記價格（優先使用 Binance 即時值）──────
+        eff_mark  = self._mark_price  if self._mark_price  > 0 else current_price
+        eff_entry = self._entry_price if self._entry_price > 0 else entry_price
+        eff_side  = self._pos_side    if self._entry_price > 0 else side.upper()
+
+        # ── 決定強平價（優先使用 Binance 回傳的實際值）──────────
+        if self._liq_price > 0:
+            liq_px      = self._liq_price
+            data_source = "live"
+        elif eff_entry > 0 and self._leverage > 1:
+            liq_px      = calc_liquidation_price(
+                entry_price=eff_entry,
                 leverage=self._leverage,
-                side=side.upper(),
+                side=eff_side,
             )
-            if liq_px > 0:
-                distance_pct = abs(current_price - liq_px) / current_price
-                if distance_pct < self._liq_buffer:
-                    msg = (
-                        f"強平距離 {distance_pct:.1%} < 緩衝 {self._liq_buffer:.1%}，"
-                        f"封鎖新倉位（強平價 {liq_px:.2f}，現價 {current_price:.2f}）"
-                    )
-                    log.warning("[FuturesRisk] %s %s", self._symbol, msg)
-                    return CheckResult(
-                        ok=False,
-                        reason=msg,
-                        details={
-                            "liq_price":    liq_px,
-                            "current_price": current_price,
-                            "distance_pct": round(distance_pct, 4),
-                            "liq_buffer":   self._liq_buffer,
-                            "leverage":     self._leverage,
-                        },
-                    )
+            data_source = "formula"
+        else:
+            # 無持倉資料 → 跳過強平檢查（允許下單）
+            return CheckResult(
+                ok=True,
+                details={
+                    "liq_checked":   False,
+                    "reason":        "no_position_data",
+                    "leverage":      self._leverage,
+                    "mark_price":    eff_mark,
+                    "data_age_sec":  round(time.time() - self._refreshed_at, 1),
+                },
+            )
+
+        # ── 強平距離計算 ────────────────────────────────────────
+        if liq_px > 0 and eff_mark > 0:
+            distance_pct = abs(eff_mark - liq_px) / eff_mark
+            details = {
+                "liq_price":    round(liq_px, 4),
+                "mark_price":   round(eff_mark, 4),
+                "distance_pct": round(distance_pct, 4),
+                "liq_buffer":   self._liq_buffer,
+                "leverage":     self._leverage,
+                "side":         eff_side,
+                "data_source":  data_source,
+                "data_age_sec": round(time.time() - self._refreshed_at, 1),
+            }
+            if distance_pct < self._liq_buffer:
+                msg = (
+                    f"強平距離 {distance_pct:.1%} < 緩衝 {self._liq_buffer:.1%}，"
+                    f"封鎖新倉位（強平價 {liq_px:.2f}，標記價格 {eff_mark:.2f}，"
+                    f"來源={data_source}）"
+                )
+                log.warning("[FuturesRisk] %s %s", self._symbol, msg)
+                return CheckResult(ok=False, reason=msg, details=details)
+            return CheckResult(ok=True, details=details)
 
         return CheckResult(
             ok=True,
             details={
-                "leverage":     self._leverage,
-                "liq_buffer":   self._liq_buffer,
-                "entry_checked": entry_price > 0,
+                "liq_checked": False,
+                "leverage":    self._leverage,
+                "mark_price":  eff_mark,
             },
         )

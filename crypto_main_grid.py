@@ -187,6 +187,7 @@ class GridBotInstance:
         self.grid_id   = cfg["id"]
         self.cfg       = cfg
         self._ws       = ws_stream
+        self._ex_client = client   # python-binance Client; used by FuturesRiskMonitor.refresh
 
         # ── 市場類型與槓桿設定 ──────────────────────────────
         self.market_type       = cfg.get("market_type",        "SPOT").upper()
@@ -357,6 +358,24 @@ class GridBotInstance:
             expires_at     = signal["expires_at"],
         )
         sid_short = signal["signal_id"][:8]
+
+        # 訊號推播：寫入 DB 後 /ws/signals WebSocket 每秒輪詢並推送至 UI。
+        # 同時透過 Telegram alerts 發出通知（未設 TOKEN 時靜默）。
+        try:
+            ind = json.loads(signal.get("indicator_data", "{}"))
+            alerts.notify_semi_signal(
+                symbol     = signal["symbol"],
+                side       = signal["side"],
+                price      = signal["price"],
+                signal_id  = signal["signal_id"],
+                atr        = ind.get("atr", 0.0),
+                upper      = ind.get("upper", 0.0),
+                lower      = ind.get("lower", 0.0),
+                expires_in = int(timeout),
+            )
+        except Exception:
+            pass  # 推播失敗不影響確認等待流程
+
         logger.info(
             f"[{self.symbol}] SEMI_AUTO 訊號已發出 "
             f"id={sid_short}… side={signal['side']} "
@@ -448,6 +467,14 @@ class GridBotInstance:
             return
         current_price = float(df1h["Close"].iloc[-1])
 
+        # 1-A2: FUTURES 強平資料刷新（Observation Phase，永遠執行，不檢查系統鎖）
+        # FuturesRiskMonitor 內建限速（預設 60s），此處無條件呼叫即可
+        if self.market_type == "FUTURES":
+            try:
+                self._market_risk.refresh_from_exchange(self._ex_client, self.symbol)
+            except Exception as _rf_err:
+                logger.debug(f"[{self.symbol}] FUTURES 強平資料刷新失敗（不影響主流程）: {_rf_err}")
+
         # 1-B: 趨勢過濾（仍對兩模式有效；超出趨勢則撤單暫停）
         fil = self.filter.check(
             df1d if (df1d is not None and len(df1d) > 200) else df1h
@@ -517,6 +544,16 @@ class GridBotInstance:
         # 階段二：執行 (Execution) — 模式權限分離點
         # ══════════════════════════════════════════════════════
 
+        # ── 全域安全鎖門（System Lock）───────────────────────
+        # 由 UI 的「解鎖交易雙手」按鈕控制（db.set_system_lock(True)）。
+        # 觀測階段（Phase 1）永遠不接觸此鎖；鎖關閉時只是靜默回傳，
+        # 所有 Binance 真實下單操作都不會發生。
+        if not db.get_system_lock():
+            logger.debug(
+                f"[{self.symbol}] 系統安全鎖關閉（is_unlocked=0），略過執行階段"
+            )
+            return
+
         # ── 市場風險檢查（FUTURES 強平距離 / MARGIN 保證金水位）──
         market_risk_result = self._market_risk.check(
             current_price = current_price,
@@ -570,12 +607,11 @@ class GridBotInstance:
         else:
             # SEMI 模式：執行階段分三層
             #   ① 成交通知（保留）
-            #   ② SEMI_AUTO 訊號確認路徑（TRADE_EXECUTION_MODE=SEMI_AUTO 時啟用）
+            #   ② 訊號生成 + 人工確認（系統鎖已解開才走到這裡）
             #   ③ 止損防禦（保留）
             logger.debug(
                 f"[{self.symbol}] SEMI 執行階段 — "
-                f"mode={TRADE_EXECUTION_MODE}，"
-                f"deploy/on_fill 預設攔截"
+                f"系統鎖已解鎖，deploy 需等待 UI 確認"
             )
 
             # ① 成交通知（無反向掛單；semi 不掛反向單）
@@ -589,9 +625,10 @@ class GridBotInstance:
                     reverse_price = None,
                 )
 
-            # ② SEMI_AUTO：條件具備時產生訊號，等待人工確認後部署
-            #    僅在 未部署 + snap 已就緒 + 24h 回撤正常 + 曝險未超限 時觸發
-            if TRADE_EXECUTION_MODE == "SEMI_AUTO" and not self._deployed and self.snap:
+            # ② 訊號生成 + 等待人工確認（真正的 SEMI_AUTO 流程）
+            #    系統安全鎖已在階段二入口保證解鎖；此處一定是允許執行的狀態。
+            #    條件：未部署 + snap 已就緒 + 24h 回撤正常 + 曝險未超限
+            if not self._deployed and self.snap:
                 if dd_ok:
                     n_buy_levels = sum(
                         1 for lv in (getattr(self.snap, "levels", []) or [])
