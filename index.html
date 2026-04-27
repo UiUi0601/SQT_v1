@@ -93,8 +93,22 @@
 
     /* Chart Column */
     #chart-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-    #chart-wrapper { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-    #chart { width: 100%; height: 100%; }
+    #chart-wrapper { flex: 1; min-height: 0; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+    #chart-main { width: 100%; flex: 0 0 auto; }
+    #chart-sub  { width: 100%; flex: 0 0 auto; border-top: 1px solid #1a2030; }
+
+    /* Layer Toggles */
+    .chart-toggles {
+      position: absolute; top: 30px; right: 8px;
+      display: flex; gap: 4px; z-index: 10;
+    }
+    .chart-toggle-btn {
+      padding: 2px 7px; font-size: 10px; font-weight: 700;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: rgba(13,17,23,.88); color: var(--muted);
+      cursor: pointer; transition: all .12s; user-select: none;
+    }
+    .chart-toggle-btn.on { background: rgba(88,166,255,.18); border-color: var(--accent); color: var(--accent); }
 
     /* OHLCV Legend */
     #chart-legend {
@@ -596,7 +610,8 @@
 
     <!-- K 線圖 -->
     <div id="chart-wrapper">
-      <div id="chart"></div>
+      <div id="chart-main"></div>
+      <div id="chart-sub"></div>
 
       <!-- OHLCV Legend -->
       <div id="chart-legend">
@@ -613,6 +628,13 @@
         <button class="interval-btn" onclick="setIntervalBtn('1h')">1h</button>
         <button class="interval-btn" onclick="setIntervalBtn('4h')">4h</button>
         <button class="interval-btn" onclick="setIntervalBtn('1d')">1d</button>
+      </div>
+
+      <!-- Layer Toggles (default OFF) -->
+      <div class="chart-toggles">
+        <button class="chart-toggle-btn" id="tog-bb"   onclick="toggleLayer('bb')"  >BB</button>
+        <button class="chart-toggle-btn" id="tog-ema"  onclick="toggleLayer('ema')" >EMA</button>
+        <button class="chart-toggle-btn" id="tog-grid" onclick="toggleLayer('grid')">Grid</button>
       </div>
 
       <!-- Click-to-set banner -->
@@ -1085,8 +1107,11 @@ function closeModal() {
 // ══════════════════════════════════════════════
 //  State Variables
 // ══════════════════════════════════════════════
-let chart, candleSeries, volumeSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMidSeries;
+let mainChart, subChart;
+let candleSeries, volumeSeries, rsiSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMidSeries;
 let upperLine = null, lowerLine = null, avgCostLine = null;
+const _layerVisible     = { bb: false, ema: false, grid: false };
+const _signalPriceLines = {};
 let upperPrice = 0, lowerPrice = 0, currentPrice = null, prevPx = null;
 let ws = null, wsTimer = null, pollTimer = null;
 let logWs = null;
@@ -1120,108 +1145,117 @@ function switchTab(name) {
 // ══════════════════════════════════════════════
 //  Chart Initialization
 // ══════════════════════════════════════════════
-function initChart() {
-  const wrap = document.getElementById('chart-wrapper');
-  chart = LightweightCharts.createChart(document.getElementById('chart'), {
+function _chartCommonOpts(wrap, height, showTimeLabels) {
+  const tickFmt = (time, tickMarkType) => {
+    const d = new Date((time + TZ_OFFSET) * 1000);
+    const MM = String(d.getUTCMonth()+1).padStart(2,'0');
+    const DD = String(d.getUTCDate()).padStart(2,'0');
+    const HH = String(d.getUTCHours()).padStart(2,'0');
+    const mm = String(d.getUTCMinutes()).padStart(2,'0');
+    if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
+    if (tickMarkType === 1) return `${d.getUTCFullYear()}/${MM}`;
+    if (tickMarkType === 2) return `${MM}/${DD}`;
+    return `${HH}:${mm}`;
+  };
+  return {
     layout:  { background: { color: '#0d1117' }, textColor: '#8b949e' },
     grid:    { vertLines: { color: '#1a2030' }, horzLines: { color: '#1a2030' } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     rightPriceScale: { borderColor: '#30363d' },
-    localization: {
-      locale: 'zh-TW',
-      dateFormat: 'yyyy-MM-dd',
-    },
     timeScale: {
       borderColor: '#30363d',
-      timeVisible: true,
+      timeVisible: showTimeLabels,
       secondsVisible: false,
-      tickMarkFormatter: (time, tickMarkType) => {
-        const d = new Date((time + TZ_OFFSET) * 1000);
-        const MM = String(d.getUTCMonth()+1).padStart(2,'0');
-        const DD = String(d.getUTCDate()).padStart(2,'0');
-        const HH = String(d.getUTCHours()).padStart(2,'0');
-        const mm = String(d.getUTCMinutes()).padStart(2,'0');
-        if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
-        if (tickMarkType === 1) return `${d.getUTCFullYear()}/${MM}`;
-        if (tickMarkType === 2) return `${MM}/${DD}`;
-        return `${HH}:${mm}`;
-      },
+      tickMarkFormatter: showTimeLabels ? tickFmt : undefined,
     },
     width:  wrap.clientWidth,
-    height: wrap.clientHeight,
-  });
+    height,
+  };
+}
 
-  // Candlestick Series（含 autoscaleInfoProvider）
-  candleSeries = chart.addCandlestickSeries({
+function initChart() {
+  const wrap   = document.getElementById('chart-wrapper');
+  const mainH  = Math.max(120, Math.floor(wrap.clientHeight * 0.75));
+  const subH   = Math.max(60,  wrap.clientHeight - mainH);
+
+  // ── Main Chart (K線 / EMA / BB / Grid)
+  mainChart = LightweightCharts.createChart(
+    document.getElementById('chart-main'),
+    _chartCommonOpts(wrap, mainH, false)
+  );
+
+  // Candlestick — pure visible-candle autoscale (no autoscaleInfoProvider override)
+  candleSeries = mainChart.addCandlestickSeries({
     upColor:       '#22c55e', downColor:       '#f85149',
     borderUpColor: '#22c55e', borderDownColor: '#f85149',
     wickUpColor:   '#22c55e', wickDownColor:   '#f85149',
-    autoscaleInfoProvider: original => {
-      const res = original();
-      if (!res) return null;
-      if (upperPrice > 0 && lowerPrice > 0) {
-        const pad = (upperPrice - lowerPrice) * 0.08;
-        res.priceRange.minValue = Math.min(res.priceRange.minValue, lowerPrice - pad);
-        res.priceRange.maxValue = Math.max(res.priceRange.maxValue, upperPrice + pad);
-      }
-      if (avgCostLine) {
-        const avg = parseFloat(document.getElementById('inp-avg-cost').value) || 0;
-        if (avg > 0) {
-          res.priceRange.minValue = Math.min(res.priceRange.minValue, avg * 0.995);
-          res.priceRange.maxValue = Math.max(res.priceRange.maxValue, avg * 1.005);
-        }
-      }
-      return res;
-    },
   });
 
-  // Volume Histogram（獨立子圖）
-  volumeSeries = chart.addHistogramSeries({
+  // EMA(20) — default invisible
+  emaSeries = mainChart.addLineSeries({
+    color: '#e3b341', lineWidth: 1, priceLineVisible: false,
+    lastValueVisible: false, crosshairMarkerVisible: false,
+    visible: false,
+  });
+
+  // Bollinger Bands — default invisible
+  const _bbOpts = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, visible: false };
+  bbUpperSeries = mainChart.addLineSeries({ color: 'rgba(163,113,247,.55)', lineWidth: 1, lineStyle: 1, ..._bbOpts });
+  bbMidSeries   = mainChart.addLineSeries({ color: 'rgba(163,113,247,.3)',  lineWidth: 1, lineStyle: 2, ..._bbOpts });
+  bbLowerSeries = mainChart.addLineSeries({ color: 'rgba(163,113,247,.55)', lineWidth: 1, lineStyle: 1, ..._bbOpts });
+
+  // ── Sub Chart (Volume / RSI)
+  subChart = LightweightCharts.createChart(
+    document.getElementById('chart-sub'),
+    _chartCommonOpts(wrap, subH, true)
+  );
+
+  volumeSeries = subChart.addHistogramSeries({
     color: '#26a69a', priceFormat: { type: 'volume' },
     priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false,
   });
-  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+  subChart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.0, bottom: 0.35 } });
 
-  // EMA(20)
-  emaSeries = chart.addLineSeries({
-    color: '#e3b341', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-    crosshairMarkerVisible: false,
+  rsiSeries = subChart.addLineSeries({
+    color: '#a371f7', lineWidth: 1, priceScaleId: 'rsi',
+    priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+  });
+  subChart.priceScale('rsi').applyOptions({ scaleMargins: { top: 0.35, bottom: 0.0 } });
+
+  // ── Sync time scales (guard against circular calls)
+  let _syncing = false;
+  mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (_syncing || !range) return;
+    _syncing = true;
+    subChart.timeScale().setVisibleLogicalRange(range);
+    _syncing = false;
+  });
+  subChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (_syncing || !range) return;
+    _syncing = true;
+    mainChart.timeScale().setVisibleLogicalRange(range);
+    _syncing = false;
   });
 
-  // Bollinger Bands（上、中、下）
-  bbUpperSeries = chart.addLineSeries({
-    color: 'rgba(163,113,247,.5)', lineWidth: 1, lineStyle: 1,
-    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-  });
-  bbMidSeries = chart.addLineSeries({
-    color: 'rgba(163,113,247,.3)', lineWidth: 1, lineStyle: 2,
-    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-  });
-  bbLowerSeries = chart.addLineSeries({
-    color: 'rgba(163,113,247,.5)', lineWidth: 1, lineStyle: 1,
-    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-  });
-
-  // OHLCV Legend
+  // ── OHLCV Legend
   const legEl = document.getElementById('chart-legend');
-  chart.subscribeCrosshairMove(param => {
+  mainChart.subscribeCrosshairMove(param => {
     if (!param.point || !param.seriesData?.size) {
       legEl.classList.remove('show'); return;
     }
     const d = param.seriesData.get(candleSeries);
-    const v = param.seriesData.get(volumeSeries);
     if (!d) { legEl.classList.remove('show'); return; }
     legEl.classList.add('show');
     document.getElementById('leg-o').textContent = fmtP(d.open);
     document.getElementById('leg-h').textContent = fmtP(d.high);
     document.getElementById('leg-l').textContent = fmtP(d.low);
     document.getElementById('leg-c').textContent = fmtP(d.close);
-    document.getElementById('leg-v').textContent = v ? fmtVol(v.value) : '--';
+    document.getElementById('leg-v').textContent = '--';
     updateLivePx(d.close, false);
   });
 
-  // Click-to-set
-  chart.subscribeClick(param => {
+  // ── Click-to-set (on main chart only)
+  mainChart.subscribeClick(param => {
     if (!clickSetMode || !param.point) return;
     const price = candleSeries.coordinateToPrice(param.point.y);
     if (price === null || price <= 0) return;
@@ -1237,13 +1271,21 @@ function initChart() {
     syncInputs();
     refreshLines();
     updateStats();
-    // Update display card
     if (mode === 'upper') document.getElementById('upper-disp').textContent = '$' + fmtP(upperPrice);
     else document.getElementById('lower-disp').textContent = '$' + fmtP(lowerPrice);
   });
 
-  // Resize observer
-  new ResizeObserver(() => chart.resize(wrap.clientWidth, wrap.clientHeight)).observe(wrap);
+  // ── Resize observer (debounced)
+  let _raf = 0;
+  new ResizeObserver(() => {
+    cancelAnimationFrame(_raf);
+    _raf = requestAnimationFrame(() => {
+      const mH = Math.max(120, Math.floor(wrap.clientHeight * 0.75));
+      const sH = Math.max(60,  wrap.clientHeight - mH);
+      mainChart.resize(wrap.clientWidth, mH);
+      subChart.resize(wrap.clientWidth, sH);
+    });
+  }).observe(wrap);
 }
 
 // ══════════════════════════════════════════════
@@ -1270,11 +1312,11 @@ function refreshLines() {
 }
 
 function drawGridLines() {
-  // Remove existing grid lines (they're separate price lines stored in an array)
   if (window._gridLines) {
     window._gridLines.forEach(l => { try { candleSeries.removePriceLine(l); } catch(e){} });
   }
   window._gridLines = [];
+  if (!_layerVisible.grid) return;
   if (upperPrice <= 0 || lowerPrice <= 0 || upperPrice <= lowerPrice) return;
   const gc = parseInt(document.getElementById('inp-gc')?.value) || 10;
   const sp = (upperPrice - lowerPrice) / gc;
@@ -1359,7 +1401,82 @@ function applyIndicators(data) {
     bbUpperSeries.setData(bb.upper);
     bbMidSeries.setData(bb.mid);
     bbLowerSeries.setData(bb.lower);
+    // Restore visibility state after setData (setData can reset options in some versions)
+    emaSeries.applyOptions({ visible: _layerVisible.ema });
+    bbUpperSeries.applyOptions({ visible: _layerVisible.bb });
+    bbMidSeries.applyOptions(  { visible: _layerVisible.bb });
+    bbLowerSeries.applyOptions({ visible: _layerVisible.bb });
   } catch(e) { console.warn('[indicators]', e); }
+}
+
+// RSI(14) — simple non-smoothed
+function calcRSI(data, period = 14) {
+  const result = [];
+  if (data.length < period + 1) return result;
+  for (let i = period; i < data.length; i++) {
+    let gains = 0, losses = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const diff = data[j].close - data[j - 1].close;
+      if (diff > 0) gains += diff; else losses -= diff;
+    }
+    const avgG = gains / period, avgL = losses / period;
+    result.push({
+      time:  data[i].time,
+      value: avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL),
+    });
+  }
+  return result;
+}
+
+// ── Layer toggles ────────────────────────────
+function toggleLayer(layer) {
+  _layerVisible[layer] = !_layerVisible[layer];
+  const on = _layerVisible[layer];
+  document.getElementById(`tog-${layer}`)?.classList.toggle('on', on);
+
+  if (layer === 'bb') {
+    bbUpperSeries.applyOptions({ visible: on });
+    bbMidSeries.applyOptions(  { visible: on });
+    bbLowerSeries.applyOptions({ visible: on });
+  } else if (layer === 'ema') {
+    emaSeries.applyOptions({ visible: on });
+  } else if (layer === 'grid') {
+    if (!on) {
+      (window._gridLines || []).forEach(l => { try { candleSeries.removePriceLine(l); } catch(e){} });
+      window._gridLines = [];
+    } else {
+      drawGridLines();
+    }
+  }
+}
+
+// ── Signal Price Lines ───────────────────────
+function refreshSignalPriceLines() {
+  if (!candleSeries) return;
+  // Remove lines for signals that are no longer PENDING
+  Object.keys(_signalPriceLines).forEach(sid => {
+    const sig = _renderedSignals[sid];
+    if (!sig || sig.status !== 'PENDING') {
+      try { candleSeries.removePriceLine(_signalPriceLines[sid]); } catch(e){}
+      delete _signalPriceLines[sid];
+    }
+  });
+  // Add lines for new PENDING signals
+  Object.values(_renderedSignals)
+    .filter(s => s.status === 'PENDING' && !_signalPriceLines[s.signal_id])
+    .forEach(sig => {
+      const price = Number(sig.price);
+      if (!price) return;
+      const side = (sig.side || '').toUpperCase();
+      _signalPriceLines[sig.signal_id] = candleSeries.createPriceLine({
+        price,
+        color: '#e3b341',
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `🎯 ${side}`,
+      });
+    });
 }
 
 // ══════════════════════════════════════════════
@@ -1412,20 +1529,24 @@ async function loadKlines(symbol, interval, limit, resetGrid) {
     _klinesCache = adj;
     candleSeries.setData(adj);
 
-    // Volume
+    // Sub-chart: Volume
     volumeSeries.setData(adj.map(k => ({
       time: k.time, value: k.volume,
       color: k.close >= k.open ? 'rgba(34,197,94,.35)' : 'rgba(248,81,73,.35)',
     })));
 
-    // Indicators
+    // Sub-chart: RSI(14)
+    const rsiData = calcRSI(adj, 14);
+    rsiSeries.setData(rsiData);
+
+    // Main-chart: EMA / BB (respect toggle visibility)
     applyIndicators(adj);
 
     // Markers
     loadTradeMarkers();
 
-    chart.timeScale().fitContent();
-    chart.timeScale().scrollToRealTime();
+    mainChart.timeScale().fitContent();
+    mainChart.timeScale().scrollToRealTime();
 
     if (adj.length > 0) {
       const last = adj[adj.length - 1];
@@ -1491,6 +1612,11 @@ function onKline(k) {
   const candle = { time: Math.floor(k.t / 1000) + TZ_OFFSET, open: +k.o, high: +k.h, low: +k.l, close: +k.c };
   candleSeries.update(candle);
   volumeSeries.update({ time: candle.time, value: +k.v, color: +k.c >= +k.o ? 'rgba(34,197,94,.35)' : 'rgba(248,81,73,.35)' });
+  // Update RSI last point from cache
+  if (_klinesCache.length > 14) {
+    const rsiPts = calcRSI(_klinesCache, 14);
+    if (rsiPts.length) rsiSeries.update(rsiPts[rsiPts.length - 1]);
+  }
   updateLivePx(+k.c, true);
 }
 
@@ -2103,6 +2229,7 @@ function renderSignalList(signals) {
 }
 
 function _renderFromCache() {
+  refreshSignalPriceLines();
   const list  = document.getElementById('signal-list');
   const badge = document.getElementById('signal-count-badge');
   const sigs  = Object.values(_renderedSignals).filter(s => s.status === 'PENDING');
