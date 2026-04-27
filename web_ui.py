@@ -66,6 +66,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
+# ── UI 身份驗證（PBKDF2-HMAC-SHA256）────────────────────────
+from quant_system.utils.ui_auth import _load_credentials, verify_password
+# ── 風險管理器（供 /api/manual_trade 風控攔截）──────────────
+from quant_system.risk.risk_manager import RiskManager, RiskConfig
+
 # ── TradeDB（統一持久層）────────────────────────────────────
 # 確保能 import 同目錄的 database.py
 sys.path.insert(0, str(Path(__file__).parent))
@@ -125,6 +130,26 @@ def _signed_delete(path: str, params: dict | None = None) -> req.Response:
     url = f"{BINANCE_API}{path}?{query_str}"
     return req.delete(url, headers={"X-MBX-APIKEY": _API_KEY}, timeout=10)
 
+
+def _signed_post(path: str, params: dict | None = None) -> req.Response:
+    """向 Binance 帳戶端點發送 HMAC-SHA256 簽章 POST 請求（用於下單）。"""
+    if not _API_KEY or not _API_SECRET:
+        raise PermissionError("BINANCE_API_KEY / BINANCE_API_SECRET 未設定")
+    p = params.copy() if params else {}
+    p["timestamp"] = int(time.time() * 1000)
+    query_str = "&".join(f"{k}={v}" for k, v in p.items())
+    sig = hmac.new(_API_SECRET.encode(), query_str.encode(), hashlib.sha256).hexdigest()
+    body = query_str + f"&signature={sig}"
+    return req.post(
+        f"{BINANCE_API}{path}",
+        data=body,
+        headers={
+            "X-MBX-APIKEY": _API_KEY,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        timeout=10,
+    )
+
 # ── TradeDB 初始化（統一讀寫 trading_bot.db）────────────────
 db_abs_path = str(Path(__file__).parent / "trading_bot.db")
 trade_db = TradeDB(db_path=db_abs_path)
@@ -139,20 +164,36 @@ except Exception:
         def __getattr__(self, name): return lambda *a, **kw: None
     grid_alerts = _NoOpAlerts()  # type: ignore
 
-# ── Bearer Token 身份驗證 ─────────────────────────────────
-CONSOLE_TOKEN = os.getenv("CONSOLE_TOKEN", "").strip()
+# ── 身份驗證（整合 ui_auth PBKDF2-HMAC-SHA256）─────────────
+# 舊 CONSOLE_TOKEN 明文比對已移除；改用 UI_PASSWORD_HASH 雜湊驗證。
+# 若未設定 UI_USERNAME / UI_PASSWORD_HASH，自動開放存取（開發模式）。
 _bearer = HTTPBearer(auto_error=False)
 
 
 def _check_auth(
     credentials: HTTPAuthorizationCredentials = Security(_bearer),
 ) -> bool:
-    """若 CONSOLE_TOKEN 未設定則開放存取；否則驗證 Bearer Token。"""
-    if not CONSOLE_TOKEN:
-        return True
-    if credentials is None or credentials.credentials != CONSOLE_TOKEN:
-        raise HTTPException(status_code=401, detail="未授權：請輸入正確的 CONSOLE_TOKEN")
+    """
+    驗證邏輯：
+      - 未設定 UI_PASSWORD_HASH → 開放存取（本機開發模式）
+      - 設定後 → Bearer token 必須通過 PBKDF2 雜湊比對
+    """
+    username, password_hash = _load_credentials()
+    if not username or not password_hash:
+        return True   # 開發模式：無憑證設定，直接放行
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="未授權：請提供 Bearer Token")
+    if not verify_password(credentials.credentials, password_hash):
+        raise HTTPException(status_code=401, detail="未授權：Token 錯誤")
     return True
+
+
+# ── 風控管理器（供 /api/manual_trade 攔截）──────────────────
+_risk_mgr = RiskManager(RiskConfig(
+    max_exposure_pct     = float(os.getenv("MAX_EXPOSURE_PCT",      "0.30")),
+    max_24h_drawdown_pct = float(os.getenv("MAX_24H_DRAWDOWN_PCT",  "0.10")),
+    pause_duration_hours = float(os.getenv("PAUSE_DURATION_HOURS",  "4.0")),
+))
 
 # ════════════════════════════════════════════════════════════
 # FastAPI App
@@ -480,9 +521,16 @@ async def grid_status():
     if PID_FILE.exists():
         try:
             pid = int(PID_FILE.read_text().strip())
-            os.kill(pid, 0)
-            running = True
-        except (OSError, ValueError):
+            # Windows 上 os.kill(pid, 0) 會因 Access Denied 而誤判為未啟動；
+            # 優先使用 psutil 做跨平台進程存活檢查
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                running = p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+            except ImportError:
+                os.kill(pid, 0)
+                running = True
+        except (OSError, ValueError, Exception):
             running = False
 
     # 取最後一筆 RUNNING 設定（或任意最新設定）
@@ -875,6 +923,180 @@ async def cancel_all_orders(
     }
 
 
+# ══ ★ 半自動人工下單通道（風控攔截）════════════════════════
+
+class ManualTradeRequest(BaseModel):
+    symbol: str
+    side:   str   # "BUY" or "SELL"
+    price:  float
+    qty:    float
+
+
+@app.post("/api/manual_trade")
+async def manual_trade(
+    order: ManualTradeRequest,
+    _: bool = Depends(_check_auth),
+):
+    """
+    半自動模式人工介入下單。
+    在呼叫 Binance 真實下單前必須通過雙重風控攔截：
+      1. risk_mgr.check_exposure()       — 曝險上限
+      2. risk_mgr.check_24h_drawdown()   — 24h 回撤暫停
+    兩項都通過後才允許送出限價單。
+    """
+    symbol = order.symbol.upper()
+    side   = order.side.upper()
+
+    if side not in ("BUY", "SELL"):
+        return JSONResponse(status_code=400, content={"error": "side 必須為 BUY 或 SELL"})
+    if order.price <= 0 or order.qty <= 0:
+        return JSONResponse(status_code=400, content={"error": "price 與 qty 必須大於 0"})
+
+    # ── 風控攔截 1：曝險上限 ──────────────────────────────
+    proposed_usdt = order.price * order.qty
+    try:
+        acct_r = _signed_get("/account")
+        acct_r.raise_for_status()
+        acct_data = acct_r.json()
+        balances  = {b["asset"]: float(b["free"]) + float(b["locked"])
+                     for b in acct_data.get("balances", [])}
+        total_equity = balances.get("USDT", 1000.0)
+    except Exception:
+        total_equity = float(os.getenv("MANUAL_CAPITAL", "1000"))
+
+    exp_ok, exp_reason, _ = _risk_mgr.check_exposure(symbol, proposed_usdt, total_equity)
+    if not exp_ok:
+        log.warning(f"[ManualTrade] 曝險攔截: {exp_reason}")
+        return JSONResponse(status_code=403, content={"error": f"風控攔截：{exp_reason}"})
+
+    # ── 風控攔截 2：24h 回撤暫停 ──────────────────────────
+    dd_ok, dd_status = _risk_mgr.check_24h_drawdown(symbol)
+    if not dd_ok:
+        log.warning(f"[ManualTrade] 24h 回撤攔截: {dd_status.reason}")
+        return JSONResponse(
+            status_code=403,
+            content={"error": f"風控攔截：24h 回撤超限 — {dd_status.reason}"},
+        )
+
+    # ── 下單（LIMIT, GTC）────────────────────────────────
+    try:
+        r = _signed_post("/order", {
+            "symbol":      symbol,
+            "side":        side,
+            "type":        "LIMIT",
+            "timeInForce": "GTC",
+            "quantity":    order.qty,
+            "price":       order.price,
+        })
+        r.raise_for_status()
+        result = r.json()
+        if isinstance(result, dict) and "code" in result:
+            return JSONResponse(
+                status_code=400,
+                content={"error": result.get("msg", "Binance 下單失敗")},
+            )
+        log.info(
+            f"[ManualTrade] {side} {symbol} "
+            f"qty={order.qty} price={order.price} → orderId={result.get('orderId')}"
+        )
+        return {
+            "success":  True,
+            "order_id": result.get("orderId"),
+            "symbol":   symbol,
+            "side":     side,
+            "price":    order.price,
+            "qty":      order.qty,
+            "status":   result.get("status"),
+            "message":  f"✅ 手動 {side} {symbol} 下單成功（orderId={result.get('orderId')}）",
+        }
+    except PermissionError as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+    except req.exceptions.RequestException as e:
+        return JSONResponse(status_code=503, content={"error": f"無法連接 Binance: {e}"})
+    except Exception as e:
+        log.error(f"[ManualTrade] 下單失敗: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ══ ★ 系統健康檢查 ════════════════════════════════════════════
+
+@app.get("/api/health_check")
+async def health_check():
+    """
+    系統自我診斷端點，用於排查「有畫面沒資料」問題。
+    回傳四項診斷結果：
+      - .env 狀態         ：API 金鑰是否存在
+      - 資料庫狀態        ：SQLite 是否可正常讀取
+      - 機器人 PID        ：PID 檔案 + 進程存活
+      - Binance API 連線  ：是否能 ping 通幣安
+    """
+    result: dict = {}
+
+    # ① .env API 金鑰
+    key_ok    = bool(_API_KEY)
+    secret_ok = bool(_API_SECRET)
+    result[".env 狀態"] = {
+        "BINANCE_API_KEY":    "✅ 已設定" if key_ok    else "❌ 未設定",
+        "BINANCE_API_SECRET": "✅ 已設定" if secret_ok else "❌ 未設定",
+        "ok": key_ok and secret_ok,
+    }
+
+    # ② 資料庫連線
+    try:
+        configs = trade_db.get_all_grid_configs()
+        result["資料庫狀態"] = {
+            "path":   db_abs_path,
+            "ok":     True,
+            "detail": f"✅ 正常（grid_config 筆數: {len(configs)}）",
+        }
+    except Exception as e:
+        result["資料庫狀態"] = {"ok": False, "detail": f"❌ 讀取失敗: {e}"}
+
+    # ③ 機器人 PID
+    pid_exists = PID_FILE.exists()
+    bot_alive  = False
+    bot_detail = "❌ PID 檔不存在"
+    if pid_exists:
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                bot_alive  = p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+                bot_detail = f"✅ run_bot.py 存活（PID={pid}）" if bot_alive else f"❌ PID={pid} 進程已終止"
+            except ImportError:
+                os.kill(pid, 0)
+                bot_alive  = True
+                bot_detail = f"✅ PID={pid} 存活（psutil 未安裝，以 os.kill 確認）"
+        except (OSError, ValueError):
+            bot_detail = f"❌ PID 檔存在但進程不存活"
+    result["機器人 PID"] = {
+        "pid_file": str(PID_FILE),
+        "ok":       bot_alive,
+        "detail":   bot_detail,
+    }
+
+    # ④ Binance API 連線
+    try:
+        ping_r = req.get(f"{BINANCE_API}/ping", timeout=5)
+        if ping_r.ok:
+            result["Binance API 連線"] = {"ok": True, "detail": "✅ Binance /api/v3/ping 回應正常"}
+        else:
+            result["Binance API 連線"] = {
+                "ok": False,
+                "detail": f"❌ Binance 回應異常（HTTP {ping_r.status_code}）",
+            }
+    except req.exceptions.ConnectionError:
+        result["Binance API 連線"] = {"ok": False, "detail": "❌ 無法連接 Binance（網路問題）"}
+    except req.exceptions.Timeout:
+        result["Binance API 連線"] = {"ok": False, "detail": "❌ Binance 請求逾時"}
+    except Exception as e:
+        result["Binance API 連線"] = {"ok": False, "detail": f"❌ 未知錯誤: {e}"}
+
+    all_ok = all(v.get("ok", False) for v in result.values())
+    return {"overall_ok": all_ok, "checks": result}
+
+
 # ════════════════════════════════════════════════════════════
 # WebSocket 代理（Binance Kline Stream → 瀏覽器）
 # ════════════════════════════════════════════════════════════
@@ -886,7 +1108,14 @@ async def kline_ws_proxy(client: WebSocket, symbol: str, interval: str = Query("
     log.info(f"[WS] 代理啟動 {symbol}/{interval}")
 
     try:
-        async with websockets.connect(binance_url, ping_interval=20, ping_timeout=15) as bws:
+        # open_timeout=10：若 Binance WS 握手超過 10 秒則拋出例外，
+        # 避免 proxy 永久掛起導致瀏覽器端 WS 停在「連線中…」
+        async with websockets.connect(
+            binance_url,
+            ping_interval=20,
+            ping_timeout=15,
+            open_timeout=10,
+        ) as bws:
             while True:
                 try:
                     msg = await asyncio.wait_for(bws.recv(), timeout=60)
@@ -897,6 +1126,11 @@ async def kline_ws_proxy(client: WebSocket, symbol: str, interval: str = Query("
                     break
     except Exception as e:
         log.warning(f"[WS] 代理錯誤：{symbol} — {e}")
+        # 連線失敗時主動推送錯誤訊息給前端，讓前端切換到輪詢備援
+        try:
+            await client.send_text(f"[WS_ERROR:{e}]")
+        except Exception:
+            pass
     finally:
         try:
             await client.close()

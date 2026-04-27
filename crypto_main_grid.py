@@ -222,9 +222,10 @@ class GridBotInstance:
             precision    = self._prec,
         )
         self.manager.setup()
-        self.cache   = DataCache(ttl_seconds=60)
-        self.snap    = None
-        self._deployed = False
+        self.cache      = DataCache(ttl_seconds=60)
+        self.snap       = None
+        self._deployed  = False
+        self._obs_snap  = None   # 觀測階段計算的 AUTO 快照候選
 
     # ── 每輪執行 ─────────────────────────────────────────────
     def tick(self) -> None:
@@ -233,23 +234,26 @@ class GridBotInstance:
             logger.warning(f"[{self.symbol}] Kill Switch 觸發中，跳過所有操作")
             return
 
-        # ⓪-B API 斷路器檢查（⑤ 熔斷期間拒絕任何 API 呼叫）
+        # ⓪-B API 斷路器檢查（熔斷期間拒絕任何 API 呼叫）
         cb_ok, cb_reason = circuit_breaker.check()
         if not cb_ok:
             logger.warning(f"[{self.symbol}] {cb_reason}")
             return
 
-        # ① 取資料
+        # ══════════════════════════════════════════════════════
+        # 階段一：觀測 (Observation) — Auto/Semi 無條件執行
+        # ══════════════════════════════════════════════════════
+
+        # 1-A: 拉取 K 線資料
         dfs  = self.cache.get_multi_timeframe(self.yf_symbol, MTF)
         df1h = dfs.get("1h")
         df1d = dfs.get("1d")
-
         if df1h is None or df1h.empty:
-            logger.warning(f"[{self.symbol}] 1h 資料缺失，跳過"); return
-
+            logger.warning(f"[{self.symbol}] 1h 資料缺失，跳過")
+            return
         current_price = float(df1h["Close"].iloc[-1])
 
-        # ② 趨勢過濾
+        # 1-B: 趨勢過濾（仍對兩模式有效；超出趨勢則撤單暫停）
         fil = self.filter.check(
             df1d if (df1d is not None and len(df1d) > 200) else df1h
         )
@@ -260,17 +264,39 @@ class GridBotInstance:
                 self._deployed = False
             return
 
-        # ③ 處理成交事件
+        # 1-C: 極端風控監控 — 無論 Auto/Semi 皆執行；結果傳遞給執行階段
+        dd_ok, dd_status = risk_mgr.check_24h_drawdown(self.symbol)
+        if not dd_ok:
+            logger.warning(f"[{self.symbol}] 24h 回撤風控觸發: {dd_status.reason}")
+
+        # 1-D: 計算並更新技術指標快照（更新 self.snap 狀態；不觸發真實佈署）
+        if self.trade_mode == "semi":
+            upper = float(self.cfg.get("upper_price", 0))
+            lower = float(self.cfg.get("lower_price", 0))
+            gc    = int(self.cfg.get("grid_count", 10))
+            if upper > lower > 0:
+                built = _build_semi_snap(
+                    upper, lower, gc, current_price,
+                    fee_rate=self._fee_calc.taker_fee,
+                )
+                if built:
+                    self.snap = built  # 更新快照供 UI 查詢；不執行 deploy
+        else:
+            computed = self.engine.compute(df1h)
+            if computed:
+                self._obs_snap = computed  # 候選快照；執行階段再決定是否 deploy
+
+        # 1-E: 監聽並同步現有訂單成交狀態（純資料同步；on_fill 推遲至執行階段）
+        fills_pending: list = []
         if self._deployed and self.snap:
-            fills = self._collect_fills()
-            for fill_event in fills:
-                # 記錄 DB
+            raw_fills = self._collect_fills()
+            for fill_event in raw_fills:
+                # DB 狀態更新
                 db.update_grid_level_filled(
                     self.grid_id, fill_event.order_id,
                     fill_event.avg_price, fill_event.executed_qty,
                 )
-
-                # ⑥ 手續費扣除：計算安全賣出量
+                # 手續費計算：更新 BUY 安全賣出量
                 if fill_event.side == "BUY":
                     fee_res = self._fee_calc.calc_buy(
                         fill_event.executed_qty, fill_event.avg_price
@@ -280,37 +306,41 @@ class GridBotInstance:
                         f"[{self.symbol}] BUY 成交 qty={fill_event.executed_qty:.6f} "
                         f"→ 到帳 {fee_res.net_qty:.6f} 安全賣量 {safe_qty:.6f}"
                     )
-                    # 將安全賣出量更新回 fill_event（供 on_fill 使用）
                     fill_event.executed_qty = safe_qty
+                # SELL 成交：記錄 PnL 並推入風控快取
+                if fill_event.side == "SELL":
+                    self._record_grid_trade(fill_event)
+                logger.info(
+                    f"[{self.symbol}] {fill_event.side} 成交同步 "
+                    f"avg_px={fill_event.avg_price:.4f} "
+                    f"qty={fill_event.executed_qty:.6f} "
+                    f"complete={fill_event.is_complete}"
+                )
+                fills_pending.append(fill_event)
 
-                # 反向掛單（含 Lock 防重複）
+        # ══════════════════════════════════════════════════════
+        # 階段二：執行 (Execution) — 模式權限分離點
+        # ══════════════════════════════════════════════════════
+        if self.trade_mode == "auto":
+            # AUTO 模式：允許 on_fill 反向掛單 + deploy 重新鋪設
+            for fill_event in fills_pending:
+                net_pnl: Optional[float] = None
+                if fill_event.side == "SELL" and self.snap:
+                    try:
+                        pnl_raw = self._fee_calc.calc_round_trip_pnl(
+                            buy_qty    = fill_event.executed_qty,
+                            buy_price  = fill_event.avg_price - self.snap.spacing,
+                            sell_price = fill_event.avg_price,
+                        )
+                        net_pnl = pnl_raw.get("net_pnl")
+                    except Exception:
+                        pass
                 new_oid = self.manager.on_fill(
                     fill_event, self.snap,
                     allow_buy=fil.allow_buy, allow_sell=fil.allow_sell,
                 )
-
-                # 記錄成對交易 PnL（SELL 成交時）+ 推入 risk_mgr PnL 快取
-                net_pnl: Optional[float] = None
-                if fill_event.side == "SELL":
-                    self._record_grid_trade(fill_event)
-                    # 計算 net_pnl 供 Telegram 推播
-                    try:
-                        if self.snap:
-                            spacing = self.snap.spacing
-                            pnl_raw = self._fee_calc.calc_round_trip_pnl(
-                                buy_qty    = fill_event.executed_qty,
-                                buy_price  = fill_event.avg_price - spacing,
-                                sell_price = fill_event.avg_price,
-                            )
-                            net_pnl = pnl_raw.get("net_pnl")
-                    except Exception:
-                        pass
-
-                # Telegram：成交通知（含反向掛單價格）
                 reverse_price: Optional[float] = None
                 if new_oid and self.snap:
-                    # 嘗試從 snap levels 找到反向掛單的格位價格
-                    opp_side = "SELL" if fill_event.side == "BUY" else "BUY"
                     for lv in (self.snap.levels or []):
                         if lv.order_id == new_oid:
                             reverse_price = lv.price
@@ -323,128 +353,57 @@ class GridBotInstance:
                     net_pnl       = net_pnl,
                     reverse_price = reverse_price,
                 )
-
                 logger.info(
                     f"[{self.symbol}] {fill_event.side} 成交 "
                     f"avg_px={fill_event.avg_price:.4f} "
                     f"qty={fill_event.executed_qty:.6f} "
                     f"complete={fill_event.is_complete} → 反向={new_oid}"
                 )
+            self._tick_auto(current_price, df1h, fil, dd_ok, dd_status)
 
-        # ══════════════════════════════════════════════════════
-        # ④ 模式分流：SEMI（半自動固定區間）vs AUTO（全自動ATR）
-        # ══════════════════════════════════════════════════════
-        if self.trade_mode == "semi":
-            self._tick_semi(current_price, fil)
         else:
-            self._tick_auto(current_price, df1h, fil)
+            # SEMI 模式：完全攔截 deploy / on_fill，機器人不對 Binance 發新單
+            logger.debug(
+                f"[{self.symbol}] SEMI 執行階段攔截 — "
+                f"deploy/on_fill 已停用，不對 Binance 發起新建倉或反向掛單"
+            )
+            # 成交通知（無反向掛單資訊，因為 semi 不掛反向單）
+            for fill_event in fills_pending:
+                alerts.notify_fill(
+                    symbol        = self.symbol,
+                    side          = fill_event.side,
+                    avg_price     = fill_event.avg_price,
+                    qty           = fill_event.executed_qty,
+                    net_pnl       = None,
+                    reverse_price = None,
+                )
+            # 止損觸發：撤銷現有掛單屬防禦性操作，非新建單，仍允許執行
+            sl = float(self.cfg.get("stop_loss_price", 0))
+            if sl > 0 and current_price <= sl:
+                logger.warning(
+                    f"[{self.symbol}] SEMI 止損觸發！"
+                    f"price={current_price:.4f} <= SL={sl:.4f}，撤銷所有掛單並暫停"
+                )
+                self.manager.cancel_all()
+                self._deployed = False
+                db.set_grid_status(self.symbol, "STOPPED")
+                alerts.notify_stop_loss(
+                    symbol        = self.symbol,
+                    current_price = current_price,
+                    stop_price    = sl,
+                )
 
     # ════════════════════════════════════════════════════════
-    # 半自動模式 Tick：固定上下限，不自動移動網格
+    # 全自動模式執行 Tick：ATR/EMA 動態計算（核心演算法完整保留）
+    # dd_ok / dd_status 由 tick() 階段一統一計算後傳入，避免重複查詢
     # ════════════════════════════════════════════════════════
-    def _tick_semi(self, current_price: float, fil) -> None:
-        upper = float(self.cfg.get("upper_price", 0))
-        lower = float(self.cfg.get("lower_price", 0))
-        gc    = int(self.cfg.get("grid_count", 10))
-        sl    = float(self.cfg.get("stop_loss_price", 0))
-
-        # ── 止損觸發檢查 ────────────────────────────────────
-        if sl > 0 and current_price <= sl:
-            logger.warning(
-                f"[{self.symbol}] SEMI 止損觸發！"
-                f"price={current_price:.4f} <= SL={sl:.4f}，"
-                f"撤銷所有掛單並暫停"
-            )
-            self.manager.cancel_all()
-            self._deployed = False
-            db.set_grid_status(self.symbol, "STOPPED")
-            alerts.notify_stop_loss(
-                symbol        = self.symbol,
-                current_price = current_price,
-                stop_price    = sl,
-            )
-            return
-
-        # ── 價格是否在固定區間內 ─────────────────────────────
-        if not (lower < current_price < upper):
-            logger.info(
-                f"[{self.symbol}] SEMI 等待："
-                f"price={current_price:.4f} 不在固定區間 [{lower:.4f}, {upper:.4f}]"
-            )
-            # 不移動網格，等待價格回到區間內
-            return
-
-        # ── 首次部署（或重啟後恢復）─────────────────────────
-        if self._deployed:
-            return  # 固定區間模式：已部署則無需 regrid
-
-        # ④.a 24h 回撤暫停檢查
-        dd_ok, dd_status = risk_mgr.check_24h_drawdown(self.symbol)
-        if not dd_ok:
-            logger.warning(f"[{self.symbol}] SEMI 24h 回撤暫停: {dd_status.reason}")
-            return
-
-        # ⑤ 建立固定網格快照
-        new_snap = _build_semi_snap(upper, lower, gc, current_price,
-                                    fee_rate=self._fee_calc.taker_fee)
-        if not new_snap:
-            return
-        if not new_snap.fee_ok:
-            logger.warning(
-                f"[{self.symbol}] SEMI 格距 {new_snap.spacing:.6f} 低於手續費下限，"
-                f"建議增大格距或減少格數"
-            )
-            # 仍繼續部署（由使用者自行承擔，與 UI 行為一致）
-
-        # 曝險上限檢查
-        n_buy = sum(1 for lv in new_snap.levels if lv.side == "BUY")
-        proposed_usdt = n_buy * self.cfg.get("qty_per_grid", 0.001) * current_price
-        total_equity  = self.cfg.get("capital", 1000.0)
-        exp_ok, exp_reason, _ = risk_mgr.check_exposure(
-            self.symbol, proposed_usdt, total_equity
-        )
-        if not exp_ok:
-            logger.warning(f"[{self.symbol}] SEMI {exp_reason}")
-            return
-        risk_mgr.update_exposure(self.symbol, proposed_usdt)
-
-        logger.info(
-            f"[{self.symbol}] SEMI 鋪設固定網格 "
-            f"upper={upper:.4f} lower={lower:.4f} "
-            f"spacing={new_snap.spacing:.6f} levels={new_snap.grid_count} "
-            f"[buy:{fil.allow_buy} sell:{fil.allow_sell}]"
-        )
-        placed = self.manager.deploy(
-            new_snap, current_price,
-            allow_buy=fil.allow_buy, allow_sell=fil.allow_sell,
-        )
-        db.save_grid_levels(self.grid_id, self.symbol, placed)
-        db.set_grid_last_regrid(self.symbol)
-        self.snap      = new_snap
-        self._deployed = True
-
-        # Telegram：SEMI 網格部署通知
-        alerts.notify_grid_deployed(
-            symbol     = self.symbol,
-            mode       = "semi",
-            upper      = upper,
-            lower      = lower,
-            spacing    = new_snap.spacing,
-            grid_count = gc,
-            qty        = float(self.cfg.get("qty_per_grid", 0.001)),
-        )
-
-    # ════════════════════════════════════════════════════════
-    # 全自動模式 Tick：ATR/EMA 動態計算（原始邏輯，完整保留）
-    # ════════════════════════════════════════════════════════
-    def _tick_auto(self, current_price: float, df1h, fil) -> None:
-        # ④ 判斷是否重新鋪設
+    def _tick_auto(self, current_price: float, df1h, fil, dd_ok: bool, dd_status) -> None:
+        # 判斷是否需要重新鋪設
         need_regrid = (not self._deployed) or self.engine.should_regrid(df1h, threshold=0.05)
         if not need_regrid:
             return
 
-        # ④.a 24h 回撤暫停檢查（純記憶體操作，無 DB I/O）
-        dd_ok, dd_status = risk_mgr.check_24h_drawdown(self.symbol)
+        # 24h 回撤暫停（由觀測階段傳入，無需重複呼叫）
         if not dd_ok:
             logger.warning(f"[{self.symbol}] 24h 回撤暫停: {dd_status.reason}")
             if self._deployed:
@@ -452,8 +411,9 @@ class GridBotInstance:
                 self._deployed = False
             return
 
-        # ⑤ 計算新網格並部署
-        new_snap = self.engine.compute(df1h)
+        # 使用觀測階段預計算的快照；若未命中則立即計算
+        new_snap = self._obs_snap or self.engine.compute(df1h)
+        self._obs_snap = None   # 用後清空，下一輪重新計算
         if not new_snap:
             return
 

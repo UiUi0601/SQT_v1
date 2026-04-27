@@ -444,9 +444,10 @@
   <div class="modal">
     <div class="modal-title">🔐 存取驗證</div>
     <div class="modal-message">請輸入控制台存取 Token（CONSOLE_TOKEN）以繼續。</div>
-    <input type="password" id="login-token-inp" placeholder="輸入 Token…"
-           onkeydown="if(event.key==='Enter')doLogin()">
-    <button class="modal-btn primary" style="width:100%" onclick="doLogin()">登入</button>
+    <form onsubmit="event.preventDefault(); doLogin();">
+      <input type="password" id="login-token-inp" placeholder="輸入 Token…">
+      <button type="submit" class="modal-btn primary" style="width:100%;margin-top:8px">登入</button>
+    </form>
     <div id="login-err"></div>
   </div>
 </div>
@@ -1408,6 +1409,10 @@ function applyStrategy(key) {
 async function fetchBotStatus() {
   try {
     const r = await fetch('/api/grid_status');
+    if (!r.ok) {
+      if (r.status >= 500) showToast(`伺服器錯誤 (${r.status})`, 'error');
+      return;
+    }
     const d = await r.json();
     const running = d.running;
     const pill = document.getElementById('bot-pill');
@@ -1542,6 +1547,10 @@ async function doKillSwitch() {
 async function loadHistory() {
   try {
     const r = await fetch('/api/history?limit=8');
+    if (!r.ok) {
+      if (r.status >= 500) showToast(`載入歷史失敗 (${r.status})`, 'error');
+      return;
+    }
     const rows = await r.json();
     const tbody = document.getElementById('hist-body');
     if (!rows.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:8px;color:var(--muted)">尚無記錄</td></tr>'; return; }
@@ -1653,7 +1662,10 @@ function calcQtyFromInvestment() {
 async function fetchBalance() {
   try {
     const r = await fetch('/api/balance');
-    if (!r.ok) return;
+    if (!r.ok) {
+      if (r.status >= 500) showToast(`餘額查詢失敗 (${r.status})`, 'error');
+      return;
+    }
     const d = await r.json();
     if (d.free !== undefined) {
       const v = Number(d.free).toFixed(2);
@@ -1663,7 +1675,6 @@ async function fetchBalance() {
   } catch(e) {}
 }
 
-let ordersTab = 'pending';
 function switchOrdersTab(tab) {
   ordersTab = tab;
   document.querySelectorAll('.orders-tab').forEach(b =>
@@ -1676,6 +1687,10 @@ function switchOrdersTab(tab) {
 async function fetchOpenOrders() {
   try {
     const r = await fetch(`/api/open_orders/${currentSymbol}`);
+    if (!r.ok) {
+      if (r.status >= 500) showToast(`掛單查詢失敗 (${r.status})`, 'error');
+      return;
+    }
     const d = await r.json();
     const rows = d.orders || [];
     document.getElementById('orders-thead').innerHTML =
@@ -1699,6 +1714,10 @@ async function fetchOpenOrders() {
 async function fetchRecentFills() {
   try {
     const r = await fetch(`/api/recent_fills?limit=20&symbol=${currentSymbol}`);
+    if (!r.ok) {
+      if (r.status >= 500) showToast(`成交記錄查詢失敗 (${r.status})`, 'error');
+      return;
+    }
     const d = await r.json();
     const rows = d.fills || [];
     document.getElementById('orders-thead').innerHTML =

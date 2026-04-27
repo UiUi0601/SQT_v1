@@ -70,7 +70,11 @@ class ExchangeClient:
                 "（勿將金鑰直接寫入程式碼）"
             )
 
-        self.client  = Client(api_key, api_secret, testnet=testnet)
+        self.client  = Client(
+            api_key, api_secret,
+            testnet=testnet,
+            requests_params={"timeout": 10},   # ③ 防止 HTTP 請求無限掛起
+        )
         self.testnet = testnet
         env_label    = "Testnet ⚗️" if testnet else "正式環境 🔴"
         log.info(f"[Exchange] 已連線 Binance {env_label}")

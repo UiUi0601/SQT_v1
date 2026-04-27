@@ -14,7 +14,8 @@
       "PowerShell(Get-Content \"C:\\\\Users\\\\hp\\\\Desktop\\\\SQT_v1\\\\.env\" | Where-Object { $_ -match \"BINANCE|API|KEY|SECRET|TOKEN\" })",
       "PowerShell(Start-Sleep -Seconds 3; try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/balance\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
       "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/recent_fills?limit=5\" -TimeoutSec 5 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)`n$\\($r.Content\\)\" } catch { \"Error: $_\" })",
-      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/balance\" -TimeoutSec 5 -UseBasicParsing; \"Balance OK: $\\($r.Content\\)\" } catch { \"Error: $_\" })"
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/balance\" -TimeoutSec 5 -UseBasicParsing; \"Balance OK: $\\($r.Content\\)\" } catch { \"Error: $_\" })",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/api/ping)"
     ]
   }
 }
