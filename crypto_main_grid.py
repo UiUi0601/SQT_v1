@@ -34,6 +34,8 @@ from quant_system.execution import (
 )
 from quant_system.exchange  import BinanceUserStream, Reconciler
 from quant_system.exchange.websocket_client import StreamMarket
+from quant_system.exchange.market_factory    import MarketFactory
+from quant_system.exchange.market_data_stream import MarketDataStream
 from quant_system.risk.risk_manager    import RiskManager, RiskConfig
 from quant_system.risk.kill_switch     import get_kill_switch
 from quant_system.risk.circuit_breaker import get_circuit_breaker
@@ -180,9 +182,13 @@ class GridBotInstance:
         self.cfg       = cfg
         self._ws       = ws_stream
 
+        # ── 市場類型與槓桿設定 ──────────────────────────────
+        self.market_type       = cfg.get("market_type",        "SPOT").upper()
+        self.leverage          = int(cfg.get("leverage",        1))
+        self.margin_type_cfg   = cfg.get("margin_type",        "CROSSED").upper()
+        self.position_side_mode = cfg.get("position_side_mode", "BOTH").upper()
+
         # ── 交易模式（雙模式核心）──────────────────────────────
-        # 'auto'：全自動，GridEngine 根據 ATR/EMA 動態計算上下限
-        # 'semi'：半自動，使用 UI 手動設定的 upper_price / lower_price
         self.trade_mode: str = cfg.get("trade_mode", "auto").strip().lower()
 
         # ── 精度管理器（共用）───────────────────────────────
@@ -216,16 +222,50 @@ class GridBotInstance:
         )
         self.filter  = TrendFilter()
         self.manager = GridManager(
-            client       = client,
-            symbol       = self.symbol,
-            qty_per_grid = float(cfg.get("qty_per_grid", 0.001)),
-            precision    = self._prec,
+            client         = client,
+            symbol         = self.symbol,
+            qty_per_grid   = float(cfg.get("qty_per_grid", 0.001)),
+            precision      = self._prec,
+            market_type    = self.market_type,
+            position_side  = self.position_side_mode if self.position_side_mode != "BOTH" else "BOTH",
+            is_isolated    = self.margin_type_cfg == "ISOLATED",
         )
         self.manager.setup()
+
+        # ── 市場風險監控器（FUTURES 強平 / MARGIN 保證金水位）──
+        self._market_risk = MarketFactory.create_risk_monitor(cfg, risk_mgr)
+
+        # ── FUTURES 初始化：設定槓桿與保證金模式（一次性）──────
+        if self.market_type == "FUTURES":
+            self._init_futures_settings(client)
+
         self.cache      = DataCache(ttl_seconds=60)
         self.snap       = None
         self._deployed  = False
-        self._obs_snap  = None   # 觀測階段計算的 AUTO 快照候選
+        self._obs_snap  = None
+
+    def _init_futures_settings(self, client) -> None:
+        """在 GridBotInstance 建立時，對 FUTURES 幣種設定槓桿與保證金模式。"""
+        try:
+            client.futures_change_leverage(
+                symbol=self.symbol, leverage=self.leverage
+            )
+            logger.info(
+                f"[{self.symbol}] FUTURES 槓桿設定完成：{self.leverage}×"
+            )
+        except Exception as e:
+            logger.warning(f"[{self.symbol}] 設定槓桿失敗（可能已設定）: {e}")
+        try:
+            client.futures_change_margin_type(
+                symbol=self.symbol, marginType=self.margin_type_cfg
+            )
+            logger.info(
+                f"[{self.symbol}] FUTURES 保證金模式設定完成：{self.margin_type_cfg}"
+            )
+        except Exception as e:
+            # -4046 = No need to change margin type (already set)
+            if "-4046" not in str(e):
+                logger.warning(f"[{self.symbol}] 設定保證金模式失敗: {e}")
 
     # ── 每輪執行 ─────────────────────────────────────────────
     def tick(self) -> None:
@@ -321,6 +361,17 @@ class GridBotInstance:
         # ══════════════════════════════════════════════════════
         # 階段二：執行 (Execution) — 模式權限分離點
         # ══════════════════════════════════════════════════════
+
+        # ── 市場風險檢查（FUTURES 強平距離 / MARGIN 保證金水位）──
+        market_risk_result = self._market_risk.check(
+            current_price = current_price,
+            proposed_usdt = 0.0,   # 純檢查，非新增倉位
+            total_equity  = float(self.cfg.get("capital", 1000.0)),
+        )
+        if not market_risk_result.ok:
+            logger.warning(f"[{self.symbol}] 市場風險封鎖: {market_risk_result.reason}")
+            return
+
         if self.trade_mode == "auto":
             # AUTO 模式：允許 on_fill 反向掛單 + deploy 重新鋪設
             for fill_event in fills_pending:
@@ -598,6 +649,12 @@ def run_grid_bot() -> None:
     instances: Dict[str, GridBotInstance]         = {}
     errs = 0
 
+    # ── 啟動 MarketDataStream（共用行情 WS，期貨幣種訂閱於 instance 建立時加入）
+    market_stream = MarketDataStream(
+        testnet = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
+    )
+    market_stream.start()
+
     # ② 啟動心跳監控（12h 定時向 Telegram 發送系統狀態）
     hb = HeartbeatMonitor(
         db              = db,
@@ -636,7 +693,8 @@ def run_grid_bot() -> None:
                 except Exception as e:
                     logger.warning(f"[Hydrate] 狀態還原失敗（不影響主流程）: {e}")
 
-                # ── 啟動 WebSocket ───────────────────────────
+                # ── 啟動 WebSocket（預設 SPOT；各幣種如需 FUTURES 串流
+                #    則在 GridBotInstance 建立時傳入對應的 ws_stream）───
                 if USE_WS:
                     if ws:
                         ws.stop()
@@ -647,7 +705,7 @@ def run_grid_bot() -> None:
                         testnet    = testnet,
                     )
                     ws.start()
-                    logger.info("[WS] User Data Stream 已啟動")
+                    logger.info("[WS] User Data Stream（SPOT）已啟動")
 
             # ── 讀取 RUNNING 網格設定 ────────────────────────
             cfgs = [c for c in db.get_all_grid_configs() if c.get("status") == "RUNNING"]
@@ -658,7 +716,10 @@ def run_grid_bot() -> None:
                     sym = cfg["symbol"]
                     if sym not in instances:
                         instances[sym] = GridBotInstance(cfg, ex.client, ws)
-                        logger.info(f"[Init] {sym} 網格實例已建立")
+                        # 注入行情串流至 DataCache，並訂閱該幣種
+                        instances[sym].cache.set_stream(market_stream)
+                        market_stream.subscribe(sym)
+                        logger.info(f"[Init] {sym} 網格實例已建立，行情串流已訂閱")
                     instances[sym].tick()
 
             # ── 清除已停止的實例 ─────────────────────────────
@@ -666,6 +727,7 @@ def run_grid_bot() -> None:
             for sym in list(instances.keys()):
                 if sym not in running_syms:
                     instances[sym].stop()
+                    market_stream.unsubscribe(sym)
                     del instances[sym]
 
             errs = 0
@@ -695,6 +757,12 @@ def run_grid_bot() -> None:
             # ③ 同樣使用 Event 等待，讓 SIGTERM 可以提前喚醒
             _shutdown_ev.wait(timeout=min(w, 60))
             _shutdown_ev.clear()
+
+    # 停止行情串流
+    try:
+        market_stream.stop()
+    except Exception:
+        pass
 
     # ③ 主迴圈退出後執行優雅關閉（含停止心跳）
     _graceful_exit(ex, ws, instances, reason="收到關閉訊號", heartbeat=hb)

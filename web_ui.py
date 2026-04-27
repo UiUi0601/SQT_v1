@@ -24,8 +24,13 @@ v6 新增：
   GET  /api/open_orders/{symbol}      → PENDING/OPEN 網格掛單
   GET  /api/recent_fills              → 最近 N 筆成交
   POST /api/cancel_all/{symbol} 🔒   → Kill Switch（Binance 直接撤單）
-  WS   /ws/kline/{symbol}             → K 線 WebSocket 代理
-  WS   /ws/logs                       → 即時日誌串流
+  POST /api/set_execution_mode 🔒    → 切換 SEMI_AUTO / FULL_AUTO
+  GET  /api/pending_signals  🔒      → 列出待確認訊號
+  POST /api/confirm_trade    🔒      → 確認或拒絕 SEMI_AUTO 訊號
+  POST /api/add_symbol       🔒      → 動態新增幣種（無需重啟）
+  WS   /ws/signals                   → SEMI_AUTO 訊號即時推播
+  WS   /ws/kline/{symbol}            → K 線 WebSocket 代理
+  WS   /ws/logs                      → 即時日誌串流
 """
 from __future__ import annotations
 
@@ -218,16 +223,43 @@ MAKER_FEE      = 0.001   # Binance 現貨 Maker 0.1%
 ROUND_TRIP_FEE = TAKER_FEE + MAKER_FEE  # 0.2% 雙邊
 MIN_NET_PROFIT = 0.004   # 最低單格淨利潤率 0.4%（低於此值警告）
 
+# ── SEMI_AUTO 執行模式設定 ────────────────────────────────────
+# bot 讀 env；UI 可透過 /api/set_execution_mode 動態切換（寫 .env 檔）
+_EXECUTION_MODE = os.getenv("TRADE_EXECUTION_MODE", "FULL_AUTO").upper()
+_SIGNAL_EXPIRE  = int(os.getenv("SIGNAL_EXPIRE_SECONDS", "30"))
+
+
 # ── Pydantic 模型 ─────────────────────────────────────────────
 class GridSave(BaseModel):
-    symbol:          str
-    direction:       str
-    upper_price:     float
-    lower_price:     float
-    grid_count:      int   = 10
-    stop_loss_price: float = 0.0    # 0 = 停用止損
-    trade_mode:      str   = "semi" # "auto" = 全自動ATR/EMA；"semi" = 半自動固定上下限
-    qty_per_grid:    float = 0.001  # 每格下單數量
+    symbol:              str
+    direction:           str
+    upper_price:         float
+    lower_price:         float
+    grid_count:          int   = 10
+    stop_loss_price:     float = 0.0
+    trade_mode:          str   = "semi"
+    qty_per_grid:        float = 0.001
+    # ── 多市場新增欄位 ─────────────────────────────────────
+    market_type:         str   = "SPOT"      # SPOT | MARGIN | FUTURES
+    leverage:            int   = 1
+    margin_type:         str   = "CROSSED"   # CROSSED | ISOLATED
+    position_side_mode:  str   = "BOTH"      # BOTH | HEDGE
+
+
+class ConfirmTradeRequest(BaseModel):
+    signal_id: str
+    confirmed: bool
+
+
+class AddSymbolRequest(BaseModel):
+    symbol:              str
+    market_type:         str   = "FUTURES"
+    leverage:            int   = 1
+    margin_type:         str   = "CROSSED"
+    position_side_mode:  str   = "BOTH"
+    qty_per_grid:        float = 0.001
+    capital:             float = 1000.0
+    trade_mode:          str   = "auto"
 
 
 # ════════════════════════════════════════════════════════════
@@ -632,17 +664,21 @@ async def save_grid(s: GridSave, _: bool = Depends(_check_auth)):
     # ── ③ 寫入 trading_bot.db（TradeDB.upsert_grid_config）──
     try:
         kwargs: dict = {
-            "status":          "RUNNING",
-            "trade_mode":      mode,
-            "direction":       s.direction,
-            "qty_per_grid":    s.qty_per_grid,
-            "grid_count":      s.grid_count,
-            "stop_loss_price": sl,
+            "status":              "RUNNING",
+            "trade_mode":          mode,
+            "direction":           s.direction,
+            "qty_per_grid":        s.qty_per_grid,
+            "grid_count":          s.grid_count,
+            "stop_loss_price":     sl,
+            # 多市場欄位
+            "market_type":         s.market_type.upper(),
+            "leverage":            s.leverage,
+            "margin_type":         s.margin_type.upper(),
+            "position_side_mode":  s.position_side_mode.upper(),
         }
         if mode == "semi":
             kwargs["upper_price"] = upper
             kwargs["lower_price"] = lower
-        # auto 模式：upper/lower 由機器人 ATR/EMA 自動計算，不覆蓋
 
         row_id = trade_db.upsert_grid_config(s.symbol.upper(), **kwargs)
     except Exception as e:
@@ -1095,6 +1131,192 @@ async def health_check():
 
     all_ok = all(v.get("ok", False) for v in result.values())
     return {"overall_ok": all_ok, "checks": result}
+
+
+# ════════════════════════════════════════════════════════════
+# SEMI_AUTO 訊號確認流程
+# ════════════════════════════════════════════════════════════
+
+@app.post("/api/set_execution_mode")
+async def set_execution_mode(
+    payload: dict,
+    _: bool = Depends(_check_auth),
+):
+    """切換 SEMI_AUTO / FULL_AUTO 執行模式（寫入 .env，需重啟生效）。"""
+    global _EXECUTION_MODE
+    mode = str(payload.get("mode", "FULL_AUTO")).upper()
+    if mode not in ("SEMI_AUTO", "FULL_AUTO"):
+        raise HTTPException(status_code=400, detail="mode 必須為 SEMI_AUTO 或 FULL_AUTO")
+    _EXECUTION_MODE = mode
+    env_path = Path(__file__).parent / ".env"
+    try:
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+            found = False
+            for i, ln in enumerate(lines):
+                if ln.startswith("TRADE_EXECUTION_MODE"):
+                    lines[i] = f"TRADE_EXECUTION_MODE={mode}"
+                    found = True
+                    break
+            if not found:
+                lines.append(f"TRADE_EXECUTION_MODE={mode}")
+            env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        log.warning(f"[set_execution_mode] 寫入 .env 失敗: {e}")
+    log.info(f"[set_execution_mode] 切換為 {mode}")
+    return {"ok": True, "mode": mode, "note": "已更新 _EXECUTION_MODE；重啟機器人後生效"}
+
+
+@app.get("/api/pending_signals")
+async def get_pending_signals(_: bool = Depends(_check_auth)):
+    """回傳目前所有 PENDING 狀態的訊號（供 SEMI_AUTO 確認面板）。"""
+    try:
+        trade_db.expire_stale_signals()
+        signals = trade_db.get_pending_signals_list(status="PENDING")
+        return {"signals": signals, "count": len(signals)}
+    except Exception as e:
+        log.warning(f"[pending_signals] {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/confirm_trade")
+async def confirm_trade(
+    body: ConfirmTradeRequest,
+    _: bool = Depends(_check_auth),
+):
+    """
+    SEMI_AUTO 人工確認端點。
+    confirmed=true  → 訊號標記為 CONFIRMED，機器人下次輪詢後執行下單。
+    confirmed=false → 訊號標記為 REJECTED，機器人跳過。
+    """
+    sig = trade_db.get_pending_signal(body.signal_id)
+    if not sig:
+        raise HTTPException(status_code=404, detail=f"signal_id={body.signal_id} 不存在")
+    if sig["status"] != "PENDING":
+        return {
+            "ok":        False,
+            "signal_id": body.signal_id,
+            "status":    sig["status"],
+            "message":   f"訊號已是 {sig['status']}，無法再操作",
+        }
+    if time.time() > sig["expires_at"]:
+        trade_db.expire_stale_signals()
+        return {
+            "ok":        False,
+            "signal_id": body.signal_id,
+            "status":    "EXPIRED",
+            "message":   "訊號已逾時，無法確認",
+        }
+    trade_db.confirm_signal(body.signal_id, body.confirmed)
+    action = "CONFIRMED" if body.confirmed else "REJECTED"
+    log.info(f"[confirm_trade] {body.signal_id} → {action}")
+    return {
+        "ok":        True,
+        "signal_id": body.signal_id,
+        "status":    action,
+        "message":   f"✅ 訊號 {body.signal_id} 已{action}",
+    }
+
+
+@app.post("/api/add_symbol")
+async def add_symbol(
+    body: AddSymbolRequest,
+    _: bool = Depends(_check_auth),
+):
+    """
+    動態新增交易幣種（無需重啟機器人）。
+    驗證後寫入 DB；機器人主迴圈下次 tick 時自動撿起並建立 GridBotInstance。
+    """
+    sym = body.symbol.upper()
+
+    # ① 驗證幣種是否存在於 Binance
+    base_url = (
+        "https://testnet.binancefuture.com"
+        if os.getenv("BINANCE_TESTNET", "true").lower() == "true"
+        else "https://fapi.binance.com"
+    )
+    try:
+        r = req.get(
+            f"{base_url}/fapi/v1/exchangeInfo",
+            params={"symbol": sym},
+            timeout=8,
+        )
+        if r.ok:
+            info = r.json()
+            symbols_info = info.get("symbols", [])
+            if not any(s["symbol"] == sym for s in symbols_info):
+                raise ValueError(f"Binance 查無幣種 {sym}")
+        else:
+            log.warning(f"[add_symbol] Binance exchangeInfo 查詢失敗（HTTP {r.status_code}）")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.warning(f"[add_symbol] 幣種驗證失敗（跳過）: {e}")
+
+    # ② 寫入 DB（機器人下次 tick 自動撿起）
+    try:
+        trade_db.upsert_grid_config(
+            sym,
+            status             = "RUNNING",
+            trade_mode         = body.trade_mode,
+            qty_per_grid       = body.qty_per_grid,
+            capital            = body.capital,
+            market_type        = body.market_type.upper(),
+            leverage           = body.leverage,
+            margin_type        = body.margin_type.upper(),
+            position_side_mode = body.position_side_mode.upper(),
+        )
+    except Exception as e:
+        log.error(f"[add_symbol] 寫入 DB 失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"DB 寫入失敗: {e}")
+
+    log.info(f"[add_symbol] {sym} 已寫入 DB，market_type={body.market_type}, leverage={body.leverage}")
+    return {
+        "ok":      True,
+        "symbol":  sym,
+        "message": f"✅ {sym} 已新增；機器人將在下次 tick 啟動（通常 30 秒內）",
+    }
+
+
+# ════════════════════════════════════════════════════════════
+# WebSocket：SEMI_AUTO 訊號推播
+# ════════════════════════════════════════════════════════════
+
+@app.websocket("/ws/signals")
+async def signals_ws(client: WebSocket):
+    """
+    推播 SEMI_AUTO 待確認訊號至瀏覽器。
+    連線後每秒輪詢 DB，有新 PENDING 訊號時即時推送 JSON。
+    """
+    await client.accept()
+    log.info("[SignalWS] 客戶端連接")
+    seen: set = set()
+    try:
+        while True:
+            try:
+                trade_db.expire_stale_signals()
+                pending = trade_db.get_pending_signals_list(status="PENDING")
+                for sig in pending:
+                    sid = sig["signal_id"]
+                    if sid not in seen:
+                        seen.add(sid)
+                        await client.send_text(__import__("json").dumps(sig))
+                # 清理已不再 PENDING 的 seen 記錄（避免無限增長）
+                if len(seen) > 200:
+                    seen = {s["signal_id"] for s in pending}
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                log.debug(f"[SignalWS] 輪詢錯誤: {e}")
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        log.info("[SignalWS] 客戶端斷線")
+        try:
+            await client.close()
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════════

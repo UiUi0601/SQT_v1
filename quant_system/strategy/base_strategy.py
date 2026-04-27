@@ -2,6 +2,8 @@
 quant_system/strategy/base_strategy.py — 策略基底類別
 """
 from __future__ import annotations
+import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Optional
@@ -11,11 +13,53 @@ import pandas as pd
 
 @dataclass
 class SignalResult:
-    signal:     str   = "HOLD"   # BUY | SELL | HOLD
-    confidence: float = 0.0      # 0~1
-    strategy:   str   = ""       # 策略名稱
-    reason:     str   = ""       # 觸發原因
-    indicators: Dict  = field(default_factory=dict)
+    signal:         str   = "HOLD"   # BUY | SELL | HOLD
+    confidence:     float = 0.0      # 0~1
+    strategy:       str   = ""
+    reason:         str   = ""       # signal_reason：人類可讀觸發說明
+    indicators:     Dict  = field(default_factory=dict)   # indicator_data
+
+
+@dataclass
+class TradeSignal:
+    """
+    SEMI_AUTO 確認流程的待下單訊號。
+
+    由 GridBotInstance 在 SEMI_AUTO 執行階段建立，
+    透過 /ws/signals 推送至 UI，等待人工確認。
+    """
+    symbol:          str
+    side:            str             # BUY | SELL
+    price:           float
+    quantity:        float
+    market_type:     str   = "SPOT"
+    leverage:        int   = 1
+    indicator_data:  Dict  = field(default_factory=dict)
+    signal_reason:   str   = ""
+    slippage_tolerance_pct: float = 0.005   # 確認時容許的最大滑點（0.5%）
+
+    # 系統欄位（自動填充）
+    signal_id:   str   = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    expires_at:  float = field(default_factory=lambda: time.time() + float(
+        __import__("os").getenv("SIGNAL_EXPIRE_SECONDS", "30")
+    ))
+    created_at:  float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict:
+        return {
+            "signal_id":              self.signal_id,
+            "symbol":                 self.symbol,
+            "side":                   self.side,
+            "price":                  self.price,
+            "quantity":               self.quantity,
+            "market_type":            self.market_type,
+            "leverage":               self.leverage,
+            "indicator_data":         self.indicator_data,
+            "signal_reason":          self.signal_reason,
+            "slippage_tolerance_pct": self.slippage_tolerance_pct,
+            "expires_at":             self.expires_at,
+            "created_at":             self.created_at,
+        }
 
 
 class BaseStrategy(ABC):

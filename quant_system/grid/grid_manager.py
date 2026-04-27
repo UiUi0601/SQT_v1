@@ -46,12 +46,19 @@ class GridManager:
         qty_per_grid:  float,
         precision:     Optional[PrecisionManager] = None,
         # ② Auto-Compounding
-        engine:        Optional[GridEngine]        = None,   # 用於呼叫 compute_compounded_qty
-        base_equity:   float                       = 0.0,    # 首次部署時的帳戶總資金
+        engine:        Optional[GridEngine]        = None,
+        base_equity:   float                       = 0.0,
+        # 多市場支援
+        market_type:   str                         = "SPOT",   # SPOT | FUTURES | MARGIN
+        position_side: str                         = "BOTH",   # BOTH | LONG | SHORT (Hedge Mode)
+        is_isolated:   bool                        = False,
     ) -> None:
-        self.client       = client
-        self.symbol       = symbol
-        self.qty_per_grid = qty_per_grid
+        self.client        = client
+        self.symbol        = symbol
+        self.qty_per_grid  = qty_per_grid
+        self.market_type   = market_type.upper()
+        self.position_side = position_side.upper()
+        self.is_isolated   = is_isolated
 
         # ② 複利追蹤
         self._engine      = engine
@@ -175,7 +182,10 @@ class GridManager:
 
         for oid in order_ids:
             try:
-                o = self.client.get_order(symbol=self.symbol, orderId=oid)
+                if self.market_type == "FUTURES":
+                    o = self.client.futures_get_order(symbol=self.symbol, orderId=oid)
+                else:
+                    o = self.client.get_order(symbol=self.symbol, orderId=oid)
             except Exception as e:
                 log.warning(f"[GridMgr] 查詢訂單 {oid} 失敗: {e}")
                 time.sleep(0.05)
@@ -310,10 +320,13 @@ class GridManager:
         if count == 0:
             return
         try:
-            self.client.cancel_open_orders(symbol=self.symbol)
-            log.info(f"[GridMgr] 已撤銷 {count} 筆掛單")
+            if self.market_type == "FUTURES":
+                self.client.futures_cancel_all_open_orders(symbol=self.symbol)
+            else:
+                self.client.cancel_open_orders(symbol=self.symbol)
+            log.info(f"[GridMgr] 已撤銷 {count} 筆掛單 [{self.market_type}]")
         except Exception as e:
-            log.warning(f"[GridMgr] 批次撤銷失敗: {e}")
+            log.warning(f"[GridMgr] 批次撤銷失敗 [{self.market_type}]: {e}")
         with self._lock:
             self._active_orders.clear()
             self._client_id_map.clear()
@@ -351,24 +364,56 @@ class GridManager:
         """
         client_oid = _make_client_oid()
         try:
-            fn  = (self.client.order_limit_buy if side == "BUY"
-                   else self.client.order_limit_sell)
-            res = fn(
-                symbol            = self.symbol,
-                quantity          = round(qty, 8),
-                price             = f"{price:.8f}",
-                newClientOrderId  = client_oid,   # ④ 冪等性綁定
-            )
+            if self.market_type == "FUTURES":
+                pos_side = None
+                if self.position_side != "BOTH":
+                    pos_side = self.position_side
+                params: dict = {
+                    "symbol":           self.symbol,
+                    "side":             side,
+                    "type":             "LIMIT",
+                    "quantity":         round(qty, 8),
+                    "price":            f"{price:.8f}",
+                    "timeInForce":      "GTC",
+                    "newClientOrderId": client_oid,
+                }
+                if pos_side:
+                    params["positionSide"] = pos_side
+                res = self.client.futures_create_order(**params)
+
+            elif self.market_type == "MARGIN":
+                res = self.client.create_margin_order(
+                    symbol           = self.symbol,
+                    side             = side,
+                    type             = "LIMIT",
+                    quantity         = round(qty, 8),
+                    price            = f"{price:.8f}",
+                    timeInForce      = "GTC",
+                    newClientOrderId = client_oid,
+                    isIsolated       = "TRUE" if self.is_isolated else "FALSE",
+                    sideEffectType   = "NO_SIDE_EFFECT",
+                )
+
+            else:
+                fn  = (self.client.order_limit_buy if side == "BUY"
+                       else self.client.order_limit_sell)
+                res = fn(
+                    symbol           = self.symbol,
+                    quantity         = round(qty, 8),
+                    price            = f"{price:.8f}",
+                    newClientOrderId = client_oid,
+                )
+
             binance_oid = str(res["orderId"])
             log.debug(
-                f"[GridMgr] 送單成功 {side} px={price:.4f} qty={qty:.6f} "
+                f"[GridMgr] 送單成功 [{self.market_type}] {side} px={price:.4f} qty={qty:.6f} "
                 f"binance_oid={binance_oid} client_oid={client_oid}"
             )
             return binance_oid, client_oid
 
         except Exception as e:
             log.error(
-                f"[GridMgr] {side} 掛單失敗 px={price:.4f} qty={qty:.6f} "
+                f"[GridMgr] {side} 掛單失敗 [{self.market_type}] px={price:.4f} qty={qty:.6f} "
                 f"client_oid={client_oid}: {e}"
             )
             return None, None
@@ -382,7 +427,10 @@ class GridManager:
         回傳 True = 撤銷成功；False = 撤銷失敗或訂單不存在。
         """
         try:
-            self.client.cancel_order(symbol=self.symbol, orderId=order_id)
+            if self.market_type == "FUTURES":
+                self.client.futures_cancel_order(symbol=self.symbol, orderId=order_id)
+            else:
+                self.client.cancel_order(symbol=self.symbol, orderId=order_id)
             with self._lock:
                 self._active_orders.pop(order_id, None)
             log.info(f"[GridMgr] ✅ 部分成交殘單 {order_id} 已撤銷，資金釋放")

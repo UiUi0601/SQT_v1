@@ -193,12 +193,24 @@ class AsyncExchangeClient:
         return await self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
 
     async def set_margin_type(self, symbol, margin_type="CROSSED"):
-        return await self._signed_post("/fapi/v1/marginType",
-                                       {"symbol": symbol, "marginType": margin_type})
+        """
+        設定保證金模式（全倉/逐倉）。
+        Binance 在模式已符合時回傳 -4046，視為成功靜默處理。
+        """
+        try:
+            return await self._signed_post("/fapi/v1/marginType",
+                                           {"symbol": symbol, "marginType": margin_type})
+        except Exception as e:
+            if self._is_binance_code(e, -4046):
+                log.debug("[AsyncClient] set_margin_type: already %s for %s, skipping",
+                          margin_type, symbol)
+                return {"code": -4046, "msg": "No need to change margin type."}
+            raise
 
-    async def set_leverage(self, symbol, leverage):
+    async def set_leverage(self, symbol, leverage: int):
+        """設定槓桿倍數（1–125x）。已符合時 Binance 仍回傳成功，無需特殊處理。"""
         return await self._signed_post("/fapi/v1/leverage",
-                                       {"symbol": symbol, "leverage": leverage})
+                                       {"symbol": symbol, "leverage": int(leverage)})
 
     async def place_futures_order(self, symbol, side, order_type, quantity,
                                    price=None, position_side=None, client_order_id=None,
@@ -207,8 +219,8 @@ class AsyncExchangeClient:
         if order_type == "LIMIT":
             params["timeInForce"] = time_in_force
             params["price"]       = str(price)
-        if position_side:       params["positionSide"] = position_side
-        if reduce_only:         params["reduceOnly"]   = "true"
+        if position_side:       params["positionSide"]    = position_side
+        if reduce_only:         params["reduceOnly"]      = "true"
         if client_order_id:     params["newClientOrderId"] = client_order_id
         return await self._signed_post("/fapi/v1/order", params)
 
@@ -316,15 +328,38 @@ class AsyncExchangeClient:
         await self._ensure_session()
         p = self._sign(params or {})
         async with self._session.post(path, data=p) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+            body = await resp.json(content_type=None)
+            if resp.status >= 400:
+                code = body.get("code", 0) if isinstance(body, dict) else 0
+                msg  = body.get("msg",  "") if isinstance(body, dict) else str(body)
+                err  = aiohttp.ClientResponseError(
+                    resp.request_info, resp.history,
+                    status=resp.status, message=f"[{code}] {msg}"
+                )
+                err.binance_code = code  # type: ignore[attr-defined]
+                raise err
+            return body
 
     async def _signed_delete(self, path, params=None):
         await self._ensure_session()
         p = self._sign(params or {})
         async with self._session.delete(path, params=p) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+            body = await resp.json(content_type=None)
+            if resp.status >= 400:
+                code = body.get("code", 0) if isinstance(body, dict) else 0
+                msg  = body.get("msg",  "") if isinstance(body, dict) else str(body)
+                err  = aiohttp.ClientResponseError(
+                    resp.request_info, resp.history,
+                    status=resp.status, message=f"[{code}] {msg}"
+                )
+                err.binance_code = code  # type: ignore[attr-defined]
+                raise err
+            return body
+
+    @staticmethod
+    def _is_binance_code(exc: Exception, code: int) -> bool:
+        """檢查例外是否為指定的 Binance 錯誤碼（附在 ClientResponseError.binance_code 上）。"""
+        return getattr(exc, "binance_code", None) == code
 
     def _sign(self, params):
         params = dict(params)

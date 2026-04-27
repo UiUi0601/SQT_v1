@@ -356,24 +356,44 @@ class TradeDB:
             );
 
             CREATE TABLE IF NOT EXISTS grid_config (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol          TEXT NOT NULL UNIQUE,
-                k               REAL DEFAULT 0.5,
-                m               REAL DEFAULT 3.0,
-                atr_period      INTEGER DEFAULT 14,
-                ema_period      INTEGER DEFAULT 20,
-                qty_per_grid    REAL DEFAULT 0.001,
-                capital         REAL DEFAULT 1000.0,
-                status          TEXT DEFAULT 'STOPPED',
-                last_regrid     TEXT,
-                created_at      TEXT,
-                updated_at      TEXT,
-                trade_mode      TEXT DEFAULT 'auto',
-                upper_price     REAL DEFAULT 0,
-                lower_price     REAL DEFAULT 0,
-                grid_count      INTEGER DEFAULT 10,
-                stop_loss_price REAL DEFAULT 0,
-                direction       TEXT DEFAULT '做多 (Long)'
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol              TEXT NOT NULL UNIQUE,
+                k                   REAL DEFAULT 0.5,
+                m                   REAL DEFAULT 3.0,
+                atr_period          INTEGER DEFAULT 14,
+                ema_period          INTEGER DEFAULT 20,
+                qty_per_grid        REAL DEFAULT 0.001,
+                capital             REAL DEFAULT 1000.0,
+                status              TEXT DEFAULT 'STOPPED',
+                last_regrid         TEXT,
+                created_at          TEXT,
+                updated_at          TEXT,
+                trade_mode          TEXT DEFAULT 'auto',
+                upper_price         REAL DEFAULT 0,
+                lower_price         REAL DEFAULT 0,
+                grid_count          INTEGER DEFAULT 10,
+                stop_loss_price     REAL DEFAULT 0,
+                direction           TEXT DEFAULT '做多 (Long)',
+                market_type         TEXT DEFAULT 'SPOT',
+                leverage            INTEGER DEFAULT 1,
+                margin_type         TEXT DEFAULT 'CROSSED',
+                position_side_mode  TEXT DEFAULT 'BOTH'
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_signals (
+                signal_id      TEXT PRIMARY KEY,
+                symbol         TEXT NOT NULL,
+                side           TEXT NOT NULL,
+                price          REAL NOT NULL,
+                quantity       REAL NOT NULL,
+                market_type    TEXT DEFAULT 'SPOT',
+                leverage       INTEGER DEFAULT 1,
+                indicator_data TEXT DEFAULT '{}',
+                signal_reason  TEXT DEFAULT '',
+                slippage_pct   REAL DEFAULT 0.005,
+                expires_at     REAL NOT NULL,
+                status         TEXT DEFAULT 'PENDING',
+                created_at     TEXT
             );
 
             CREATE TABLE IF NOT EXISTS grid_levels (
@@ -412,6 +432,10 @@ class TradeDB:
                 "ALTER TABLE grid_config ADD COLUMN grid_count INTEGER DEFAULT 10",
                 "ALTER TABLE grid_config ADD COLUMN stop_loss_price REAL DEFAULT 0",
                 "ALTER TABLE grid_config ADD COLUMN direction TEXT DEFAULT '做多 (Long)'",
+                "ALTER TABLE grid_config ADD COLUMN market_type TEXT DEFAULT 'SPOT'",
+                "ALTER TABLE grid_config ADD COLUMN leverage INTEGER DEFAULT 1",
+                "ALTER TABLE grid_config ADD COLUMN margin_type TEXT DEFAULT 'CROSSED'",
+                "ALTER TABLE grid_config ADD COLUMN position_side_mode TEXT DEFAULT 'BOTH'",
             ]:
                 try:
                     conn.execute(_col_sql)
@@ -610,23 +634,28 @@ class TradeDB:
         新增或更新網格設定。
         支援欄位：k, m, atr_period, ema_period, qty_per_grid, capital,
                   status, trade_mode, upper_price, lower_price,
-                  grid_count, stop_loss_price, direction
+                  grid_count, stop_loss_price, direction,
+                  market_type, leverage, margin_type, position_side_mode
         """
         defaults: Dict[str, Any] = {
-            "k":               0.5,
-            "m":               3.0,
-            "atr_period":      14,
-            "ema_period":      20,
-            "qty_per_grid":    0.001,
-            "capital":         1000.0,
-            "status":          "STOPPED",
-            # ── 雙模式新增欄位 ──────────────────────────────
-            "trade_mode":      "auto",    # "auto" | "semi"
-            "upper_price":     0.0,
-            "lower_price":     0.0,
-            "grid_count":      10,
-            "stop_loss_price": 0.0,
-            "direction":       "做多 (Long)",
+            "k":                   0.5,
+            "m":                   3.0,
+            "atr_period":          14,
+            "ema_period":          20,
+            "qty_per_grid":        0.001,
+            "capital":             1000.0,
+            "status":              "STOPPED",
+            "trade_mode":          "auto",
+            "upper_price":         0.0,
+            "lower_price":         0.0,
+            "grid_count":          10,
+            "stop_loss_price":     0.0,
+            "direction":           "做多 (Long)",
+            # ── 多市場新增欄位 ──────────────────────────────
+            "market_type":         "SPOT",      # SPOT | MARGIN | FUTURES
+            "leverage":            1,
+            "margin_type":         "CROSSED",   # CROSSED | ISOLATED
+            "position_side_mode":  "BOTH",      # BOTH | HEDGE
         }
         defaults.update(kwargs)
         ts = _now()
@@ -852,6 +881,11 @@ class TradeDB:
                 "WHERE status IN ('FILLED','CANCELLED') AND filled_at < ?",
                 (cutoff,)
             ).rowcount
+            r["pending_signals"] = conn.execute(
+                "DELETE FROM pending_signals "
+                "WHERE status IN ('CONFIRMED','REJECTED','EXPIRED') AND created_at < ?",
+                (cutoff,)
+            ).rowcount
             conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             return r
 
@@ -864,10 +898,69 @@ class TradeDB:
         )
         return results
 
+    # ════════════════════════════════════════════════════════
+    # 待確認訊號（SEMI_AUTO 模式）
+    # ════════════════════════════════════════════════════════
+    def upsert_pending_signal(
+        self,
+        signal_id:      str,
+        symbol:         str,
+        side:           str,
+        price:          float,
+        quantity:       float,
+        market_type:    str   = "SPOT",
+        leverage:       int   = 1,
+        indicator_data: str   = "{}",
+        signal_reason:  str   = "",
+        slippage_pct:   float = 0.005,
+        expires_at:     float = 0.0,
+    ) -> None:
+        ts = _now()
+        _w(lambda conn: conn.execute(
+            "INSERT OR REPLACE INTO pending_signals "
+            "(signal_id,symbol,side,price,quantity,market_type,leverage,"
+            " indicator_data,signal_reason,slippage_pct,expires_at,status,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
+            (signal_id, symbol, side, price, quantity, market_type, leverage,
+             indicator_data, signal_reason, slippage_pct, expires_at, ts)
+        ))
+
+    def confirm_signal(self, signal_id: str, confirmed: bool) -> None:
+        status = "CONFIRMED" if confirmed else "REJECTED"
+        _w(lambda conn: conn.execute(
+            "UPDATE pending_signals SET status=? WHERE signal_id=? AND status='PENDING'",
+            (status, signal_id)
+        ))
+
+    def expire_stale_signals(self) -> int:
+        now_ts = time.time()
+        fut = _w(lambda conn: conn.execute(
+            "UPDATE pending_signals SET status='EXPIRED' "
+            "WHERE status='PENDING' AND expires_at < ?",
+            (now_ts,)
+        ).rowcount)
+        return fut.result(timeout=_WRITE_TIMEOUT)
+
+    def get_pending_signal(self, signal_id: str) -> Optional[Dict]:
+        with _conn() as c:
+            row = c.execute(
+                "SELECT * FROM pending_signals WHERE signal_id=?", (signal_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_pending_signals_list(self, status: str = "PENDING") -> list:
+        """Return all signals with the given status, ordered by created_at desc."""
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT * FROM pending_signals WHERE status=? ORDER BY created_at DESC",
+                (status,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def get_db_stats(self) -> Dict:
         tables = [
             "trades", "paper_trades", "paper_equity_log",
-            "grid_config", "grid_levels", "grid_trades",
+            "grid_config", "grid_levels", "grid_trades", "pending_signals",
         ]
         stats: Dict[str, Any] = {}
         with _conn() as c:
