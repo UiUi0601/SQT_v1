@@ -19,7 +19,7 @@ crypto_main_grid.py — AQT_v1 動態網格機器人主迴圈（強化版）
   - 兩種模式都透過同一個 GridManager 處理，無需更改邏輯
 """
 from __future__ import annotations
-import os, sys, time, logging, signal, threading
+import os, sys, time, logging, signal, threading, json, uuid
 from typing import Dict, Optional
 from dotenv import load_dotenv
 
@@ -49,6 +49,12 @@ DEBUG    = os.getenv("DEBUG_MODE",           "false").lower() == "true"
 INTERVAL = int(os.getenv("GRID_INTERVAL_SECONDS", "30"))
 USE_WS   = os.getenv("USE_WEBSOCKET",        "true").lower() == "true"
 MAX_RETRY = 5
+
+# ── SEMI_AUTO 執行模式（可由 UI /api/set_execution_mode 動態切換）──
+# FULL_AUTO：機器人全自動執行（預設）
+# SEMI_AUTO ：機器人產出訊號後等待人工確認再執行
+TRADE_EXECUTION_MODE  = os.getenv("TRADE_EXECUTION_MODE",  "FULL_AUTO").upper()
+SIGNAL_EXPIRE_SECONDS = int(os.getenv("SIGNAL_EXPIRE_SECONDS", "30"))
 
 # ── 風險設定（從環境變數讀取）────────────────────────────────
 RISK_CFG = RiskConfig(
@@ -267,6 +273,155 @@ class GridBotInstance:
             if "-4046" not in str(e):
                 logger.warning(f"[{self.symbol}] 設定保證金模式失敗: {e}")
 
+    # ════════════════════════════════════════════════════════
+    # SEMI_AUTO 訊號工具
+    # ════════════════════════════════════════════════════════
+
+    def _build_semi_auto_signal(
+        self,
+        current_price: float,
+        df1h,
+        snap: "GridSnapshot",
+        fil,
+    ) -> dict:
+        """
+        建立帶有技術指標的待確認訊號 dict。
+        indicator_data 包含：price, ATR, 網格上下限/格距/中心,
+        趨勢過濾結果（allow_buy/allow_sell），以及 EMA200（如資料足夠）。
+        """
+        ema200: float = 0.0
+        try:
+            if df1h is not None and len(df1h) >= 200:
+                ema200 = float(df1h["Close"].rolling(200).mean().iloc[-1])
+        except Exception:
+            pass
+
+        levels = getattr(snap, "levels", []) or []
+        n_buy  = sum(1 for lv in levels if getattr(lv, "side", "") == "BUY")
+        n_sell = sum(1 for lv in levels if getattr(lv, "side", "") == "SELL")
+        dominant_side = "BUY" if n_buy >= n_sell else "SELL"
+
+        indicator_data = json.dumps({
+            "price":        round(current_price, 6),
+            "atr":          round(getattr(snap, "atr", 0.0), 6),
+            "upper":        round(getattr(snap, "upper", 0.0), 6),
+            "lower":        round(getattr(snap, "lower", 0.0), 6),
+            "spacing":      round(getattr(snap, "spacing", 0.0), 6),
+            "center":       round(getattr(snap, "center", 0.0), 6),
+            "spacing_src":  getattr(snap, "spacing_source", ""),
+            "allow_buy":    fil.allow_buy,
+            "allow_sell":   fil.allow_sell,
+            "ema200":       round(ema200, 6),
+            "grid_count":   getattr(snap, "grid_count", 0),
+            "fee_ok":       getattr(snap, "fee_ok", True),
+        })
+
+        return {
+            "signal_id":      str(uuid.uuid4()),
+            "symbol":         self.symbol,
+            "side":           dominant_side,
+            "price":          current_price,
+            "quantity":       float(self.cfg.get("qty_per_grid", 0.001)),
+            "market_type":    self.market_type,
+            "leverage":       self.leverage,
+            "indicator_data": indicator_data,
+            "signal_reason":  (
+                f"SEMI_AUTO deploy: center={getattr(snap,'center',0):.4f} "
+                f"atr={getattr(snap,'atr',0):.4f}"
+            ),
+            "slippage_pct":   float(os.getenv("SEMI_AUTO_SLIPPAGE_PCT", "0.005")),
+            "expires_at":     time.time() + SIGNAL_EXPIRE_SECONDS,
+        }
+
+    def _await_signal_confirmation(self, signal: dict, timeout: float) -> bool:
+        """
+        ① 將訊號寫入 DB（pending_signals 表）
+        ② 輪詢 DB 等待 UI 確認（CONFIRMED/REJECTED/EXPIRED）
+        ③ CONFIRMED 後進行滑點驗證（比對 DataCache 最新收盤價）
+        返回 True = 可執行下單；False = 放棄（已在內部記錄日誌）。
+
+        每 0.5 秒檢查一次；在 _is_running=False 或 _shutdown_ev 設定時
+        立即退出，確保 SIGTERM 能即時響應。
+        """
+        db.upsert_pending_signal(
+            signal_id      = signal["signal_id"],
+            symbol         = signal["symbol"],
+            side           = signal["side"],
+            price          = signal["price"],
+            quantity       = signal["quantity"],
+            market_type    = signal["market_type"],
+            leverage       = signal["leverage"],
+            indicator_data = signal["indicator_data"],
+            signal_reason  = signal["signal_reason"],
+            slippage_pct   = signal["slippage_pct"],
+            expires_at     = signal["expires_at"],
+        )
+        sid_short = signal["signal_id"][:8]
+        logger.info(
+            f"[{self.symbol}] SEMI_AUTO 訊號已發出 "
+            f"id={sid_short}… side={signal['side']} "
+            f"price={signal['price']:.4f}，等待 UI 確認（逾時 {timeout:.0f}s）"
+        )
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            # 優先響應關閉訊號
+            if not _is_running or _shutdown_ev.is_set():
+                logger.info(
+                    f"[{self.symbol}] SEMI_AUTO 收到關閉訊號，中止等待 id={sid_short}…"
+                )
+                return False
+
+            row = db.get_pending_signal(signal["signal_id"])
+            if row:
+                status = row.get("status", "PENDING")
+
+                if status == "CONFIRMED":
+                    # ── 滑點驗證：取 DataCache 最新收盤價與訊號價格比較 ──
+                    try:
+                        fresh_dfs = self.cache.get_multi_timeframe(
+                            self.yf_symbol, {"1h": MTF["1h"]}
+                        )
+                        fresh_df = fresh_dfs.get("1h")
+                        if fresh_df is not None and not fresh_df.empty:
+                            fresh_px = float(fresh_df["Close"].iloc[-1])
+                            drift    = abs(fresh_px - signal["price"]) / signal["price"]
+                            limit    = signal.get("slippage_pct", 0.005)
+                            if drift > limit:
+                                logger.warning(
+                                    f"[{self.symbol}] SEMI_AUTO 滑點驗證失敗 "
+                                    f"id={sid_short}… "
+                                    f"signal_px={signal['price']:.4f} "
+                                    f"now={fresh_px:.4f} "
+                                    f"drift={drift:.3%} > limit={limit:.3%}，"
+                                    f"放棄下單"
+                                )
+                                return False
+                    except Exception:
+                        pass  # 無法取得最新價格，寬鬆放行
+                    logger.info(
+                        f"[{self.symbol}] SEMI_AUTO 訊號 id={sid_short}… "
+                        f"UI 確認通過 ✅"
+                    )
+                    return True
+
+                if status in ("REJECTED", "EXPIRED"):
+                    logger.warning(
+                        f"[{self.symbol}] SEMI_AUTO 訊號 id={sid_short}… "
+                        f"已{status}，放棄此次下單"
+                    )
+                    return False
+
+            time.sleep(0.5)
+
+        # 逾時 → 標記 DB 中所有過期訊號
+        db.expire_stale_signals()
+        logger.warning(
+            f"[{self.symbol}] SEMI_AUTO 訊號 id={sid_short}… "
+            f"等待確認逾時 ({timeout:.0f}s)，放棄下單"
+        )
+        return False
+
     # ── 每輪執行 ─────────────────────────────────────────────
     def tick(self) -> None:
         # ⓪-A 全域緊急停止檢查
@@ -413,12 +568,17 @@ class GridBotInstance:
             self._tick_auto(current_price, df1h, fil, dd_ok, dd_status)
 
         else:
-            # SEMI 模式：完全攔截 deploy / on_fill，機器人不對 Binance 發新單
+            # SEMI 模式：執行階段分三層
+            #   ① 成交通知（保留）
+            #   ② SEMI_AUTO 訊號確認路徑（TRADE_EXECUTION_MODE=SEMI_AUTO 時啟用）
+            #   ③ 止損防禦（保留）
             logger.debug(
-                f"[{self.symbol}] SEMI 執行階段攔截 — "
-                f"deploy/on_fill 已停用，不對 Binance 發起新建倉或反向掛單"
+                f"[{self.symbol}] SEMI 執行階段 — "
+                f"mode={TRADE_EXECUTION_MODE}，"
+                f"deploy/on_fill 預設攔截"
             )
-            # 成交通知（無反向掛單資訊，因為 semi 不掛反向單）
+
+            # ① 成交通知（無反向掛單；semi 不掛反向單）
             for fill_event in fills_pending:
                 alerts.notify_fill(
                     symbol        = self.symbol,
@@ -428,7 +588,66 @@ class GridBotInstance:
                     net_pnl       = None,
                     reverse_price = None,
                 )
-            # 止損觸發：撤銷現有掛單屬防禦性操作，非新建單，仍允許執行
+
+            # ② SEMI_AUTO：條件具備時產生訊號，等待人工確認後部署
+            #    僅在 未部署 + snap 已就緒 + 24h 回撤正常 + 曝險未超限 時觸發
+            if TRADE_EXECUTION_MODE == "SEMI_AUTO" and not self._deployed and self.snap:
+                if dd_ok:
+                    n_buy_levels = sum(
+                        1 for lv in (getattr(self.snap, "levels", []) or [])
+                        if getattr(lv, "side", "") == "BUY"
+                    )
+                    proposed_usdt = (
+                        n_buy_levels
+                        * float(self.cfg.get("qty_per_grid", 0.001))
+                        * current_price
+                    )
+                    total_equity = float(self.cfg.get("capital", 1000.0))
+                    # ── 曝險上限（保留原有風控，不可刪除）──────────────
+                    exp_ok, exp_reason, _ = risk_mgr.check_exposure(
+                        self.symbol, proposed_usdt, total_equity
+                    )
+                    if exp_ok:
+                        signal = self._build_semi_auto_signal(
+                            current_price, df1h, self.snap, fil
+                        )
+                        confirmed = self._await_signal_confirmation(
+                            signal, timeout=float(SIGNAL_EXPIRE_SECONDS)
+                        )
+                        if confirmed:
+                            risk_mgr.update_exposure(self.symbol, proposed_usdt)
+                            placed = self.manager.deploy(
+                                self.snap, current_price,
+                                allow_buy=fil.allow_buy, allow_sell=fil.allow_sell,
+                            )
+                            db.save_grid_levels(self.grid_id, self.symbol, placed)
+                            db.set_grid_last_regrid(self.symbol)
+                            self._deployed = True
+                            logger.info(
+                                f"[{self.symbol}] SEMI_AUTO 網格部署成功 "
+                                f"center={self.snap.center:.4f} "
+                                f"levels={self.snap.grid_count}"
+                            )
+                            alerts.notify_grid_deployed(
+                                symbol     = self.symbol,
+                                mode       = "semi",
+                                upper      = self.snap.upper,
+                                lower      = self.snap.lower,
+                                spacing    = self.snap.spacing,
+                                grid_count = self.snap.grid_count,
+                                qty        = float(self.cfg.get("qty_per_grid", 0.001)),
+                            )
+                    else:
+                        logger.warning(
+                            f"[{self.symbol}] SEMI_AUTO 曝險攔截: {exp_reason}"
+                        )
+                else:
+                    logger.warning(
+                        f"[{self.symbol}] SEMI_AUTO 24h 回撤暫停 "
+                        f"({dd_status.reason})，略過訊號生成"
+                    )
+
+            # ③ 止損觸發：撤銷現有掛單屬防禦性操作，非新建單，仍允許執行
             sl = float(self.cfg.get("stop_loss_price", 0))
             if sl > 0 and current_price <= sl:
                 logger.warning(
@@ -489,6 +708,20 @@ class GridBotInstance:
         if not exp_ok:
             logger.warning(f"[{self.symbol}] {exp_reason}")
             return
+
+        # ── SEMI_AUTO 確認門：全自動計算完成後等待 UI 確認再部署 ──
+        # 曝險在確認通過後才更新，避免拒絕/逾時時虛耗額度
+        if TRADE_EXECUTION_MODE == "SEMI_AUTO":
+            signal = self._build_semi_auto_signal(current_price, df1h, new_snap, fil)
+            if not self._await_signal_confirmation(
+                signal, timeout=float(SIGNAL_EXPIRE_SECONDS)
+            ):
+                logger.info(
+                    f"[{self.symbol}] AUTO SEMI_AUTO 確認未通過，跳過本次部署"
+                )
+                return
+        # ─────────────────────────────────────────────────────
+
         risk_mgr.update_exposure(self.symbol, proposed_usdt)
 
         logger.info(

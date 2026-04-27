@@ -435,6 +435,55 @@
     }
     #login-token-inp:focus { outline: none; border-color: var(--accent); }
     #login-err { font-size: 11px; color: var(--sell); min-height: 16px; text-align: center; margin-top: 8px; }
+
+    /* ════ SEMI_AUTO ════ */
+    .exec-mode-row {
+      display: flex; gap: 6px; margin-top: 8px;
+    }
+    .exec-mode-btn {
+      flex: 1; padding: 6px 4px; border-radius: 7px; font-size: 10px; font-weight: 700;
+      cursor: pointer; border: 1px solid var(--border); background: var(--hover);
+      color: var(--muted); transition: all .15s; text-align: center;
+    }
+    .exec-mode-btn.active-full { border-color: var(--lower); color: var(--lower); background: rgba(34,197,94,.08); }
+    .exec-mode-btn.active-semi { border-color: var(--gold);  color: var(--gold);  background: rgba(227,179,65,.08); }
+    .signal-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .signal-card {
+      background: var(--hover); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 10px; font-size: 11px;
+    }
+    .signal-card.buy  { border-left: 3px solid var(--lower); }
+    .signal-card.sell { border-left: 3px solid var(--sell);  }
+    .signal-card-hd { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+    .signal-sym  { font-weight: 800; font-size: 12px; }
+    .signal-side { font-weight: 700; font-size: 11px; padding: 1px 7px; border-radius: 4px; }
+    .signal-side.buy  { background: rgba(34,197,94,.15); color: var(--lower); }
+    .signal-side.sell { background: rgba(248,81,73,.15);  color: var(--sell); }
+    .signal-meta { font-size: 10px; color: var(--muted); line-height: 1.6; }
+    .signal-ind  { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 5px 0; }
+    .signal-ind-item { font-size: 10px; color: var(--muted); }
+    .signal-ind-item span { color: var(--text); font-weight: 600; }
+    .signal-timer { font-size: 10px; color: var(--gold); margin-bottom: 5px; }
+    .signal-btns { display: flex; gap: 6px; margin-top: 6px; }
+    .signal-btn-confirm {
+      flex: 1; padding: 5px; border-radius: 6px; font-size: 11px; font-weight: 700;
+      cursor: pointer; border: 1px solid var(--lower);
+      background: rgba(34,197,94,.12); color: var(--lower); transition: all .15s;
+    }
+    .signal-btn-confirm:hover { background: rgba(34,197,94,.25); }
+    .signal-btn-reject {
+      flex: 1; padding: 5px; border-radius: 6px; font-size: 11px; font-weight: 700;
+      cursor: pointer; border: 1px solid var(--sell);
+      background: rgba(248,81,73,.12); color: var(--sell); transition: all .15s;
+    }
+    .signal-btn-reject:hover { background: rgba(248,81,73,.25); }
+    .signal-empty { text-align: center; padding: 12px; font-size: 11px; color: var(--muted); }
+    .signal-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 16px; height: 16px; border-radius: 8px;
+      background: var(--sell); color: #fff; font-size: 10px; font-weight: 700;
+      margin-left: 4px; padding: 0 4px;
+    }
   </style>
 </head>
 <body>
@@ -766,6 +815,42 @@
             <div style="font-size:10px;color:var(--muted);margin-top:1px" id="bot-symbol-text">--</div>
           </div>
         </div>
+      </div>
+
+      <!-- ═ 執行模式切換 ═ -->
+      <div>
+        <div class="sec-title" style="display:flex;align-items:center;gap:6px">
+          執行模式
+          <span id="exec-mode-badge" style="font-size:10px;color:var(--muted);font-weight:500">FULL_AUTO</span>
+        </div>
+        <div class="exec-mode-row">
+          <button class="exec-mode-btn active-full" id="btn-full-auto" onclick="setExecutionMode('FULL_AUTO')">
+            🤖 FULL_AUTO<br><span style="font-weight:400;font-size:9px">全自動執行</span>
+          </button>
+          <button class="exec-mode-btn" id="btn-semi-auto" onclick="setExecutionMode('SEMI_AUTO')">
+            🎯 SEMI_AUTO<br><span style="font-weight:400;font-size:9px">等待人工確認</span>
+          </button>
+        </div>
+        <div id="semi-auto-desc" style="display:none;margin-top:6px;background:rgba(227,179,65,.08);border:1px solid rgba(227,179,65,.2);border-radius:7px;padding:7px 9px;font-size:10px;color:var(--muted);line-height:1.6">
+          🎯 SEMI_AUTO：機器人計算訊號並寫入確認佇列，由您在下方面板手動確認後才真正下單。
+        </div>
+      </div>
+
+      <!-- ═ SEMI_AUTO 訊號確認面板 ═ -->
+      <div id="signal-panel">
+        <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span>
+            待確認訊號
+            <span id="signal-count-badge" class="signal-badge" style="display:none">0</span>
+          </span>
+          <button class="btn-apply" onclick="fetchPendingSignals()" style="font-size:9px;padding:2px 7px">↻ 刷新</button>
+        </div>
+        <div class="signal-list" id="signal-list">
+          <div class="signal-empty">目前無待確認訊號</div>
+        </div>
+      </div>
+
+      <div>
         <div class="stat-grid" style="margin-top:8px">
           <div class="stat-box"><div class="stat-lbl">幣種</div><div class="stat-val" id="bot-symbol">--</div></div>
           <div class="stat-box"><div class="stat-lbl">網格數</div><div class="stat-val" id="bot-grids">--</div></div>
@@ -1812,6 +1897,187 @@ function appendLog(line) {
 }
 
 // ══════════════════════════════════════════════
+//  SEMI_AUTO — Execution Mode & Signal Confirmation
+// ══════════════════════════════════════════════
+let _execMode = 'FULL_AUTO';
+let _signalWs  = null;
+let _signalTimers = {};   // signal_id → countdown interval
+
+async function fetchExecutionMode() {
+  // Reflect the server-side env var on page load (best-effort; no dedicated GET endpoint)
+  // We infer from any stored sessionStorage key set by a prior setExecutionMode call.
+  const stored = sessionStorage.getItem('aqt_exec_mode');
+  if (stored) applyExecModeUI(stored);
+}
+
+async function setExecutionMode(mode) {
+  try {
+    const r = await authFetch('/api/set_execution_mode', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast(`切換失敗: ${d.detail || d.error}`, 'error'); return; }
+    _execMode = mode;
+    sessionStorage.setItem('aqt_exec_mode', mode);
+    applyExecModeUI(mode);
+    showToast(`執行模式已切換為 ${mode}（重啟機器人後生效）`, 'success');
+  } catch(e) {
+    showToast(`切換模式失敗: ${e.message}`, 'error');
+  }
+}
+
+function applyExecModeUI(mode) {
+  _execMode = mode;
+  const badge = document.getElementById('exec-mode-badge');
+  const btnFull = document.getElementById('btn-full-auto');
+  const btnSemi = document.getElementById('btn-semi-auto');
+  const desc    = document.getElementById('semi-auto-desc');
+  const panel   = document.getElementById('signal-panel');
+  if (!badge) return;
+
+  badge.textContent = mode;
+  badge.style.color = mode === 'SEMI_AUTO' ? 'var(--gold)' : 'var(--lower)';
+
+  btnFull.className = 'exec-mode-btn' + (mode === 'FULL_AUTO' ? ' active-full' : '');
+  btnSemi.className = 'exec-mode-btn' + (mode === 'SEMI_AUTO' ? ' active-semi' : '');
+
+  desc.style.display  = mode === 'SEMI_AUTO' ? '' : 'none';
+  panel.style.display = mode === 'SEMI_AUTO' ? '' : 'none';
+}
+
+// ── Signal WebSocket ──────────────────────────────────────
+function connectSignalWs() {
+  if (_signalWs) { try { _signalWs.close(); } catch(e){} }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  _signalWs = new WebSocket(`${proto}//${location.host}/ws/signals`);
+  _signalWs.onmessage = e => {
+    try {
+      const sig = JSON.parse(e.data);
+      _mergeSignal(sig);
+    } catch(err) {}
+  };
+  _signalWs.onclose = () => setTimeout(connectSignalWs, 5000);
+  _signalWs.onerror = () => {};
+}
+
+// ── Fetch / Render ────────────────────────────────────────
+async function fetchPendingSignals() {
+  try {
+    const r = await authFetch('/api/pending_signals');
+    if (!r.ok) return;
+    const d = await r.json();
+    renderSignalList(d.signals || []);
+  } catch(e) {}
+}
+
+let _renderedSignals = {};   // signal_id → signal object currently shown
+
+function _mergeSignal(sig) {
+  _renderedSignals[sig.signal_id] = sig;
+  _renderFromCache();
+}
+
+function renderSignalList(signals) {
+  _renderedSignals = {};
+  signals.forEach(s => { _renderedSignals[s.signal_id] = s; });
+  _renderFromCache();
+}
+
+function _renderFromCache() {
+  const list  = document.getElementById('signal-list');
+  const badge = document.getElementById('signal-count-badge');
+  const sigs  = Object.values(_renderedSignals).filter(s => s.status === 'PENDING');
+
+  // Update count badge
+  if (badge) {
+    badge.style.display = sigs.length ? '' : 'none';
+    badge.textContent   = sigs.length;
+  }
+
+  if (!list) return;
+  if (!sigs.length) {
+    list.innerHTML = '<div class="signal-empty">目前無待確認訊號</div>';
+    return;
+  }
+
+  list.innerHTML = sigs.map(sig => {
+    const ind  = _parseIndicators(sig.indicator_data);
+    const side = (sig.side || '').toUpperCase();
+    const sideClass = side === 'BUY' ? 'buy' : 'sell';
+    const sideLabel = side === 'BUY' ? 'BUY' : 'SELL';
+    const px   = sig.price ? Number(sig.price).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:4}) : '--';
+    const ttl  = sig.expires_at ? Math.max(0, Math.round(sig.expires_at - Date.now()/1000)) : '--';
+    const sidShort = (sig.signal_id || '').substring(0,8);
+
+    return `
+      <div class="signal-card ${sideClass}" id="sig-${sidShort}">
+        <div class="signal-card-hd">
+          <span class="signal-sym">${sig.symbol || '--'}</span>
+          <span class="signal-side ${sideClass}">${sideLabel}</span>
+        </div>
+        <div class="signal-meta">價格: $${px} | 數量: ${sig.quantity || '--'} | ${sig.market_type || 'SPOT'}×${sig.leverage||1}</div>
+        ${ind ? `
+        <div class="signal-ind">
+          ${ind.atr    ? `<div class="signal-ind-item">ATR: <span>${ind.atr}</span></div>` : ''}
+          ${ind.center ? `<div class="signal-ind-item">中心: <span>$${Number(ind.center).toFixed(2)}</span></div>` : ''}
+          ${ind.upper  ? `<div class="signal-ind-item">上限: <span>$${Number(ind.upper).toFixed(2)}</span></div>` : ''}
+          ${ind.lower  ? `<div class="signal-ind-item">下限: <span>$${Number(ind.lower).toFixed(2)}</span></div>` : ''}
+          ${ind.spacing? `<div class="signal-ind-item">格距: <span>${Number(ind.spacing).toFixed(4)}</span></div>` : ''}
+          ${ind.ema200 && ind.ema200 > 0 ? `<div class="signal-ind-item">EMA200: <span>$${Number(ind.ema200).toFixed(2)}</span></div>` : ''}
+        </div>` : ''}
+        <div class="signal-timer" id="timer-${sidShort}">⏱ 剩餘: ${ttl}s</div>
+        <div class="signal-meta" style="font-size:9px;color:var(--muted)">${sig.signal_reason || ''}</div>
+        <div class="signal-btns">
+          <button class="signal-btn-confirm" onclick="confirmSignal('${sig.signal_id}', true)">✅ 確認下單</button>
+          <button class="signal-btn-reject"  onclick="confirmSignal('${sig.signal_id}', false)">❌ 拒絕</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Start countdown timers for each signal
+  sigs.forEach(sig => {
+    const sidShort = (sig.signal_id || '').substring(0,8);
+    if (_signalTimers[sig.signal_id]) clearInterval(_signalTimers[sig.signal_id]);
+    _signalTimers[sig.signal_id] = setInterval(() => {
+      const el = document.getElementById(`timer-${sidShort}`);
+      if (!el) { clearInterval(_signalTimers[sig.signal_id]); return; }
+      const remaining = Math.max(0, Math.round((sig.expires_at || 0) - Date.now()/1000));
+      el.textContent = `⏱ 剩餘: ${remaining}s`;
+      if (remaining <= 0) {
+        clearInterval(_signalTimers[sig.signal_id]);
+        delete _renderedSignals[sig.signal_id];
+        _renderFromCache();
+      }
+    }, 1000);
+  });
+}
+
+function _parseIndicators(raw) {
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch(e) { return null; }
+}
+
+async function confirmSignal(signalId, confirmed) {
+  try {
+    const r = await authFetch('/api/confirm_trade', {
+      method: 'POST',
+      body: JSON.stringify({ signal_id: signalId, confirmed }),
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast(`操作失敗: ${d.detail || d.error}`, 'error'); return; }
+    const label = confirmed ? '✅ 已確認，等待機器人執行…' : '❌ 已拒絕';
+    showToast(label, confirmed ? 'success' : 'info');
+    // Remove from local cache
+    delete _renderedSignals[signalId];
+    _renderFromCache();
+    // Refresh list after 1s to reflect server state
+    setTimeout(fetchPendingSignals, 1200);
+  } catch(e) {
+    showToast(`操作失敗: ${e.message}`, 'error');
+  }
+}
+
+// ══════════════════════════════════════════════
 //  Latency
 // ══════════════════════════════════════════════
 async function measureLatency() {
@@ -1908,6 +2174,12 @@ async function boot() {
   connectLogWs();
   measureLatency();
 
+  // Restore execution mode from session storage & hide signal panel until SEMI_AUTO active
+  fetchExecutionMode();
+  // Hide signal panel by default; shown when SEMI_AUTO is active
+  const sigPanel = document.getElementById('signal-panel');
+  if (sigPanel) sigPanel.style.display = 'none';
+
   await Promise.all([
     loadKlines(currentSymbol, currentInterval, currentLimit, true),
     load24h(currentSymbol),
@@ -1918,6 +2190,7 @@ async function boot() {
   ]);
 
   connectWS(currentSymbol, currentInterval);
+  connectSignalWs();
   fetchOpenOrders();
   calcQtyFromInvestment();
 
@@ -1929,6 +2202,10 @@ async function boot() {
   setInterval(measureLatency,  10_000);
   setInterval(() => {
     if (ordersTab === 'pending') fetchOpenOrders(); else fetchRecentFills();
+  }, 5_000);
+  // Refresh pending signals every 5s when SEMI_AUTO is active
+  setInterval(() => {
+    if (_execMode === 'SEMI_AUTO') fetchPendingSignals();
   }, 5_000);
 }
 

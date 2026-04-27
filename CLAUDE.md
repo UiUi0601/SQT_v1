@@ -126,6 +126,23 @@ Binance WebSocket → BinanceUserStream → _collect_fills()
 
 `runtime/trading_bot.pid` — written by `run_bot.py`, used by web UI to check bot liveness. `runtime/web_ui.pid` — same for the web process. `web_ui.py` auto-kills stale processes occupying port 8000 on startup.
 
+### SEMI_AUTO execution mode
+
+`TRADE_EXECUTION_MODE` (env var, default `FULL_AUTO`) controls whether the bot needs human confirmation before deploying a grid:
+
+- **`FULL_AUTO`** — Original behavior; bot deploys automatically once all risk checks pass.
+- **`SEMI_AUTO`** — Bot generates a signal with `indicator_data` (ATR, EMA, grid bounds) and writes it to `pending_signals` DB table. `GridBotInstance._await_signal_confirmation()` blocks-polls for up to `SIGNAL_EXPIRE_SECONDS` seconds. If the UI confirms (`POST /api/confirm_trade`), the bot validates slippage and deploys. If the signal is rejected, expires, or slippage too high, deployment is abandoned and logged.
+
+This gate fires in **both** `trade_mode=semi` (fixed bounds) and `trade_mode=auto` (ATR/EMA computed bounds). All existing risk checks (24h drawdown, exposure cap, circuit breaker, kill switch, trend filter) run **before** the SEMI_AUTO gate — they are never skipped.
+
+The gate can be toggled at runtime via `POST /api/set_execution_mode` (UI button in the 機器人 panel). The change writes to `.env` and takes effect on the next bot restart.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `TRADE_EXECUTION_MODE` | `FULL_AUTO` | `SEMI_AUTO` = human-confirm before deploy |
+| `SIGNAL_EXPIRE_SECONDS` | 30 | Seconds before an unconfirmed signal auto-expires |
+| `SEMI_AUTO_SLIPPAGE_PCT` | 0.005 | Max price drift allowed between signal generation and confirmed execution |
+
 ### Key env vars for tuning
 
 | Variable | Default | Effect |
