@@ -6,29 +6,36 @@
   <title>AQT — 動態網格交易控制台 v6</title>
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   <style>
-    /* ════ 設計變數 ════ */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+    /* ════ 設計變數 — Cyberpunk Pro ════ */
     :root {
-      --bg:      #0d1117;
-      --card:    #161b22;
-      --hover:   #21262d;
-      --border:  #30363d;
-      --text:    #e6edf3;
-      --muted:   #8b949e;
+      --bg:      #0B0E14;
+      --card:    #181C27;
+      --hover:   #1E2435;
+      --border:  #2A2E39;
+      --text:    #D8DEF0;
+      --muted:   #6B7394;
       --upper:   #f97316;
-      --lower:   #22c55e;
-      --sell:    #f85149;
-      --accent:  #58a6ff;
-      --purple:  #a371f7;
-      --gold:    #e3b341;
+      --lower:   #00ff9d;
+      --sell:    #ff3b69;
+      --bull:    #00ff9d;
+      --bear:    #ff3b69;
+      --accent:  #4D9FFF;
+      --purple:  #9932CC;
+      --gold:    #F5D300;
       --aside-w: 310px;
+      --mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; overflow: hidden; }
+    html, body { height: 100vh; overflow: hidden; }
     body {
       background: var(--bg); color: var(--text);
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
       display: flex; flex-direction: column; user-select: none;
     }
+    /* numeric / data values always monospace */
+    .mono, .ind-val, .lc-price, .stat-val, .live-px,
+    .leg-val, .calc-qty-val, .sc-val { font-family: var(--mono); }
 
     /* ════ Header ════ */
     header {
@@ -88,14 +95,30 @@
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
     .hdr-spacer { flex: 1; }
 
-    /* ════ Main Layout ════ */
-    main { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+    /* ════ Main Layout — 3-column Grid ════ */
+    main {
+      flex: 1; min-height: 0; overflow: hidden;
+      display: grid;
+      grid-template-columns: 20% 60% 20%;
+    }
 
-    /* Chart Column */
-    #chart-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+    /* Left Column */
+    #left-col {
+      display: flex; flex-direction: column; overflow: hidden;
+      background: var(--card); border-right: 1px solid var(--border);
+    }
+
+    /* Center / Chart Column */
+    #chart-col { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
     #chart-wrapper { flex: 1; min-height: 0; position: relative; overflow: hidden; display: flex; flex-direction: column; }
     #chart-main { width: 100%; flex: 0 0 auto; }
-    #chart-sub  { width: 100%; flex: 0 0 auto; border-top: 1px solid #1a2030; }
+    #chart-sub  { width: 100%; flex: 0 0 auto; border-top: 1px solid var(--border); }
+
+    /* Right Column */
+    #right-col {
+      display: flex; flex-direction: column; overflow: hidden;
+      background: var(--card); border-left: 1px solid var(--border);
+    }
 
     /* Layer Toggles */
     .chart-toggles {
@@ -215,8 +238,8 @@
 
     /* ════ Aside ════ */
     aside {
-      width: var(--aside-w); flex-shrink: 0;
-      background: var(--card); border-left: 1px solid var(--border);
+      width: 100%;
+      background: var(--card);
       display: flex; flex-direction: column; overflow: hidden;
     }
     .tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
