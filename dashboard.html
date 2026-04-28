@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AQT Dashboard - 交易控制台</title>
+    <link rel="icon" href="data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAFElEQVR42gENAKr/AP///wEAAAACAEwAywEAAA==">
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+        
+        :root {
+            --bg: #0B0E14;
+            --card: #181C27;
+            --hover: #1E2435;
+            --border: #2A2E39;
+            --text: #D8DEF0;
+            --muted: #6B7394;
+            --upper: #f97316;
+            --lower: #00ff9d;
+            --sell: #ff3b69;
+            --bull: #00ff9d;
+            --bear: #ff3b69;
+            --accent: #4D9FFF;
+            --purple: #9932CC;
+            --gold: #F5D300;
+            --aside-w: 310px;
+            --mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100vh; overflow: hidden; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            display: flex;
+            flex-direction: column;
+            user-select: none;
+        }
+
+        .mono, .ind-val, .lc-price, .stat-val, .live-px {
+            font-family: var(--mono);
+        }
+
+        /* Header */
+        header {
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            height: 50px;
+            padding: 0 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+            z-index: 100;
+        }
+
+        .logo { font-size: 14px; font-weight: 900; color: var(--accent); letter-spacing: 2px; white-space: nowrap; }
+        .hdr-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+        
+        select {
+            background: var(--hover);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            outline: none;
+            height: 28px;
+        }
+
+        select:focus { border-color: var(--accent); }
+
+        .live-px {
+            font-size: 16px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            transition: color .2s;
+            white-space: nowrap;
+        }
+
+        .live-px.up { color: var(--lower); }
+        .live-px.down { color: var(--sell); }
+        .live-px.flat { color: var(--text); }
+
+        .badge {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 5px;
+            white-space: nowrap;
+        }
+
+        .badge.up { background: rgba(34,197,94,.15); color: var(--lower); }
+        .badge.down { background: rgba(248,81,73,.15); color: var(--sell); }
+
+        .hdr-stat { font-size: 11px; color: var(--muted); white-space: nowrap; }
+        .hdr-stat span { color: var(--text); font-weight: 600; }
+
+        .bot-pill {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: var(--hover);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 3px 9px;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .bot-pill-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--muted);
+            flex-shrink: 0;
+            transition: background .3s;
+        }
+
+        .bot-pill.running { border-color: var(--lower); }
+        .bot-pill.running .bot-pill-dot { background: var(--lower); animation: pulse 2s infinite; }
+
+        .balance-card {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--hover);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 3px 9px;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+            color: var(--muted);
+        }
+
+        .balance-card .bal-val { color: var(--lower); }
+
+        .latency-card {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        #latency-val { font-weight: 700; }
+
+        .ws-status {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .ws-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--muted);
+            flex-shrink: 0;
+            transition: background .3s;
+        }
+
+        .ws-status.ok .ws-dot { background: var(--lower); animation: pulse 2s infinite; }
+        .ws-status.warn .ws-dot { background: #f59e0b; }
+        .ws-status.err .ws-dot { background: var(--sell); }
+
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+        .hdr-spacer { flex: 1; }
+
+        /* Main Layout */
+        main {
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+            display: grid;
+            grid-template-columns: 20% 60% 20%;
+        }
+
+        /* Left Column */
+        #left-col {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--card);
+            border-right: 1px solid var(--border);
+        }
+
+        /* Center Chart */
+        #chart-col { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+        #chart-wrapper { flex: 1; min-height: 0; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+        #chart-main { width: 100%; flex: 0 0 auto; }
+        #chart-sub { width: 100%; flex: 0 0 auto; border-top: 1px solid var(--border); }
+
+        /* Right Column */
+        #right-col {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--card);
+            border-left: 1px solid var(--border);
+        }
+
+        /* Execution Mode Switcher */
+        .execution-mode-switcher {
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+
+        .mode-switcher-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .mode-buttons {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .mode-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: var(--hover);
+            color: var(--muted);
+        }
+
+        .mode-btn.active {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+        }
+
+        .mode-btn:hover:not(.active) {
+            border-color: var(--accent);
+            color: var(--text);
+        }
+
+        .mode-status {
+            font-size: 11px;
+            color: var(--muted);
+            margin-left: auto;
+        }
+
+        .mode-status.active {
+            color: var(--lower);
+        }
+
+        /* Logout Button */
+        .logout-btn {
+            background: transparent;
+            border: 1px solid var(--sell);
+            color: var(--sell);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .logout-btn:hover {
+            background: rgba(248, 81, 73, 0.1);
+        }
+
+        /* Loading Overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(11, 14, 20, 0.9);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .loading-overlay.show {
+            display: flex;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(77, 159, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: var(--accent);
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+    </div>
+
+    <!-- Header -->
+    <header>
+        <div class="logo">⚡ AQT</div>
+        <div class="hdr-sep"></div>
+        
+        <select id="sel-symbol" onchange="onSymbolChange()">
+            <option value="BTCUSDT">BTCUSDT</option>
+            <option value="ETHUSDT">ETHUSDT</option>
+            <option value="SOLUSDT">SOLUSDT</option>
+            <option value="BNBUSDT">BNBUSDT</option>
+            <option value="XRPUSDT">XRPUSDT</option>
+            <option value="DOGEUSDT">DOGEUSDT</option>
+            <option value="ADAUSDT">ADAUSDT</option>
+            <option value="AVAXUSDT">AVAXUSDT</option>
+        </select>
+
+        <div class="hdr-sep"></div>
+        <div class="live-px flat" id="live-px">$---,---</div>
+        <div class="badge" id="badge-change" style="display:none"></div>
+        <div class="hdr-stat" id="hdr-high" style="display:none">H: <span>--</span></div>
+        <div class="hdr-stat" id="hdr-low" style="display:none">L: <span>--</span></div>
+
+        <div class="hdr-spacer"></div>
+
+        <div class="bot-pill" id="bot-pill">
+            <div class="bot-pill-dot"></div>
+            <span id="bot-pill-text">未啟動</span>
+        </div>
+
+        <div class="balance-card" id="balance-card" title="可用 USDT">
+            💰 <span class="bal-val" id="balance-val">--</span> USDT
+        </div>
+
+        <div class="latency-card">
+            📡 <span id="latency-val" style="color:var(--muted)">--ms</span>
+        </div>
+
+        <div class="ws-status" id="ws-status">
+            <div class="ws-dot"></div>
+            <span id="ws-label">連線中…</span>
+        </div>
+
+        <button class="logout-btn" onclick="logout()" title="登出系統">登出</button>
+    </header>
+
+    <!-- Execution Mode Switcher -->
+    <div class="execution-mode-switcher">
+        <div class="mode-switcher-title">🎯 交易模式</div>
+        <div class="mode-buttons">
+            <button class="mode-btn" id="btn-full-auto" onclick="switchExecutionMode('FULL_AUTO')">
+                🤖 全自動
+            </button>
+            <button class="mode-btn" id="btn-semi-auto" onclick="switchExecutionMode('SEMI_AUTO')">
+                🎯 半自動
+            </button>
+        </div>
+        <div class="mode-status" id="mode-status">
+            載入中...
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <main>
+        <!-- Left Column -->
+        <div id="left-col">
+            <div style="padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
+                <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted)">📡 市場掃描</span>
+                <button class="btn-apply" onclick="refreshSuggest()" style="font-size:9px;padding:2px 7px;">↻ 刷新</button>
+            </div>
+            
+            <!-- AI Analysis Engine -->
+            <div class="ai-engine-block">
+                <div class="ai-engine-title">AI 分析引擎 · Scoring Engine</div>
+                
+                <div class="ai-score-row">
+                    <div class="ai-score-label">
+                        <span class="ai-score-name">技術面 TECH</span>
+                        <span class="ai-score-val" id="ai-tech-val">0.73</span>
+                    </div>
+                    <div class="ai-bar-track"><div class="ai-bar-fill" id="ai-tech-bar" style="width:73%"></div></div>
+                </div>
+
+                <div class="ai-score-row">
+                    <div class="ai-score-label">
+                        <span class="ai-score-name">鯨魚動向 WHALE</span>
+                        <span class="ai-score-val" id="ai-whale-val">0.58</span>
+                    </div>
+                    <div class="ai-bar-track"><div class="ai-bar-fill whale" id="ai-whale-bar" style="width:58%"></div></div>
+                </div>
+
+                <div class="ai-score-row">
+                    <div class="ai-score-label">
+                        <span class="ai-score-name">新聞情緒 NEWS</span>
+                        <span class="ai-score-val" id="ai-news-val">0.41</span>
+                    </div>
+                    <div class="ai-bar-track"><div class="ai-bar-fill news" id="ai-news-bar" style="width:41%"></div></div>
+                </div>
+
+                <div class="ai-score-row">
+                    <div class="ai-score-label">
+                        <span class="ai-score-name">恐慌貪婪 F&G</span>
+                        <span class="ai-score-val" id="ai-fg-val">0.62</span>
+                    </div>
+                    <div class="ai-bar-track"><div class="ai-bar-fill fg" id="ai-fg-bar" style="width:62%"></div></div>
+                </div>
+
+                <div class="ai-score-row">
+                    <div class="ai-score-label">
+                        <span class="ai-score-name">盤口動能 ORDERFLOW</span>
+                        <span class="ai-score-val" id="ai-of-val">0.87</span>
+                    </div>
+                    <div class="ai-bar-track"><div class="ai-bar-fill" id="ai-of-bar" style="width:87%"></div></div>
+                </div>
+            </div>
+
+            <!-- Market Indicators -->
+            <div style="padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0">
+                <div class="indicator-row">
+                    <div class="ind-box" style="grid-column:1/-1">
+                        <div class="ind-lbl">市場狀態</div>
+                        <div class="ind-val" id="ind-regime"><span class="regime-badge regime-RANGING">--</span></div>
+                    </div>
+                    <div class="ind-box"><div class="ind-lbl">ATR(14)</div><div class="ind-val" id="ind-atr">--</div></div>
+                    <div class="ind-box"><div class="ind-lbl">ATR %</div><div class="ind-val" id="ind-atr-pct">--</div></div>
+                    <div class="ind-box"><div class="ind-lbl">布林通道寬</div><div class="ind-val" id="ind-bbw">--</div></div>
+                    <div class="ind-box"><div class="ind-lbl">年化波動率</div><div class="ind-val" id="ind-hv">--</div></div>
+                </div>
+            </div>
+            
+            <div style="flex:1;overflow-y:auto;padding:10px 12px" id="symbol-list-container">
+            </div>
+        </div>
+
+        <!-- Center Chart -->
+        <div id="chart-col">
+            <div id="chart-wrapper">
+                <div id="chart-main"></div>
+                <div id="chart-sub"></div>
+                
+                <div id="chart-legend">
+                    <div class="leg-item"><span class="leg-lbl">O</span><span class="leg-val" id="leg-o">--</span></div>
+                    <div class="leg-item"><span class="leg-lbl">H</span><span class="leg-val" id="leg-h" style="color:var(--lower)">--</span></div>
+                    <div class="leg-item"><span class="leg-lbl">L</span><span class="leg-val" id="leg-l" style="color:var(--sell)">--</span></div>
+                    <div class="leg-item"><span class="leg-lbl">C</span><span class="leg-val" id="leg-c">--</span></div>
+                    <div class="leg-item"><span class="leg-lbl">V</span><span class="leg-val" id="leg-v" style="color:var(--muted)">--</span></div>
+                </div>
+
+                <div class="interval-bar">
+                    <button class="interval-btn active" onclick="setIntervalBtn('15m')">15m</button>
+                    <button class="interval-btn" onclick="setIntervalBtn('1h')">1h</button>
+                    <button class="interval-btn" onclick="setIntervalBtn('4h')">4h</button>
+                    <button class="interval-btn" onclick="setIntervalBtn('1d')">1d</button>
+                </div>
+
+                <div class="chart-toggles">
+                    <button class="chart-toggle-btn" id="tog-bb" onclick="toggleLayer('bb')">BB</button>
+                    <button class="chart-toggle-btn" id="tog-ema" onclick="toggleLayer('ema')">EMA 7/25/99</button>
+                    <button class="chart-toggle-btn" id="tog-grid" onclick="toggleLayer('grid')">Grid</button>
+                </div>
+
+                <div id="click-set-banner">📍 點擊圖表設定 <span id="click-set-target">--</span> 價格</div>
+                <div id="chart-loading"><div class="spin"></div>載入 K 線中…</div>
+            </div>
+        </div>
+
+        <!-- Right Column -->
+        <div id="right-col">
+            <aside>
+                <div class="tabs">
+                    <div class="tab active" onclick="switchTab('settings')">📐 設定</div>
+                    <div class="tab" onclick="switchTab('bot')">🤖 機器人</div>
+                    <div class="tab" onclick="switchTab('wallet')">💼 錢包</div>
+                </div>
+
+                <!-- Settings Panel -->
+                <div class="tab-panel active" id="panel-settings">
+                    <!-- Grid Settings -->
+                    <div>
+                        <div class="sec-title">網格區間</div>
+                        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+                            <div class="line-card upper">
+                                <div class="lc-head"><div class="lc-dot" style="background:var(--upper)"></div>上限 UPPER</div>
+                                <div class="lc-price upper" id="upper-disp">---</div>
+                                <input class="lc-input" type="number" id="upper-inp" step="0.01" placeholder="輸入上限" oninput="onManualInput('upper')" onblur="onManualBlur()">
+                            </div>
+
+                            <div class="line-card lower">
+                                <div class="lc-head"><div class="lc-dot" style="background:var(--lower)"></div>下限 LOWER</div>
+                                <div class="lc-price lower" id="lower-disp">---</div>
+                                <input class="lc-input" type="number" id="lower-inp" step="0.01" placeholder="輸入下限" oninput="onManualInput('lower')" onblur="onManualBlur()">
+                            </div>
+
+                            <div style="display:flex;gap:5px">
+                                <button class="btn-click-set" style="flex:1" onclick="startClickSet('upper')" id="btn-cs-upper">📍 點擊設上限</button>
+                                <button class="btn-click-set" style="flex:1" onclick="startClickSet('lower')" id="btn-cs-lower">📍 點擊設下限</button>
+                            </div>
+
+                            <div class="line-card stoploss">
+                                <div class="lc-head"><div class="lc-dot" style="background:var(--sell)"></div>止損 STOP LOSS <span style="font-size:9px;color:var(--muted);margin-left:4px">（選填，0=停用）</span></div>
+                                <div class="lc-price stoploss" id="sl-disp">停用</div>
+                                <input class="lc-input" type="number" id="sl-inp" step="0.01" min="0" placeholder="止損價格（需低於下限）" oninput="onSlInput()">
+                            </div>
+
+                            <div class="stat-grid">
+                                <div class="stat-box"><div class="stat-lbl">區間幅度</div><div class="stat-val" id="st-range">--</div></div>
+                                <div class="stat-box"><div class="stat-lbl">區間%</div><div class="stat-val" id="st-pct">--</div></div>
+                                <div class="stat-box"><div class="stat-lbl">每格格距</div><div class="stat-val" id="st-spacing">--</div></div>
+                                <div class="stat-box"><div class="stat-lbl">單格淨利</div><div class="stat-val" id="st-gpct">--</div></div>
+                            </div>
+
+                            <div class="fee-warn" id="fee-warn"></div>
+                        </div>
+                    </div>
+
+                    <!-- Trade Mode -->
+                    <div>
+                        <div class="sec-title">交易模式</div>
+                        <div style="display:flex;gap:6px;margin-top:8px">
+                            <label style="flex:1;cursor:pointer">
+                                <input type="radio" name="trade-mode" id="mode-semi" value="semi" checked onchange="onModeChange()">
+                                <div class="mode-card" id="mode-card-semi" style="border-color:var(--accent)">
+                                    <div style="font-size:12px;font-weight:800;color:var(--accent)">🎯 半自動</div>
+                                    <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">你設上下限<br>機器人執行</div>
+                                </div>
+                            </label>
+                            <label style="flex:1;cursor:pointer">
+                                <input type="radio" name="trade-mode" id="mode-auto" value="auto" onchange="onModeChange()">
+                                <div class="mode-card" id="mode-card-auto">
+                                    <div style="font-size:12px;font-weight:800;color:var(--muted)">🤖 全自動</div>
+                                    <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">ATR/EMA 動態<br>計算上下限</div>
+                                </div>
+                            </label>
+                        </div>
+                        <div id="auto-desc" style="display:none;background:rgba(77,159,255,.08);border:1px solid rgba(77,159,255,.2);border-radius:7px;padding:8px 10px;font-size:10px;color:var(--muted);line-height:1.6;margin-top:8px">
+                            🤖 機器人每 30 秒根據 ATR×EMA 自動計算最佳上下限並重新鋪設網格。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bot Panel -->
+                <div class="tab-panel" id="panel-bot">
+                    <div>
+                        <div class="sec-title">執行狀態</div>
+                        <div class="bot-status-row" style="margin-top:8px">
+                            <div class="bot-status-dot stopped" id="bot-dot"></div>
+                            <div>
+                                <div class="bot-status-text stopped" id="bot-status-text">機器人未啟動</div>
+                                <div style="font-size:10px;color:var(--muted);margin-top:1px" id="bot-symbol-text">--</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="sec-title">網格控制</div>
+                        <div class="btn-row" style="margin-top:8px">
+                            <button class="btn-start" id="btn-save" onclick="saveGrid()">🚀 確認設定並啟動網格</button>
+                            <button class="btn-stop" id="btn-stop" onclick="confirmStopGrid()">⏹ 停止網格機器人</button>
+                            <button class="btn-kill" id="btn-kill" onclick="confirmKillSwitch()">☠ 進階 Kill Switch</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Wallet Panel -->
+                <div class="tab-panel" id="panel-wallet">
+                    <div>
+                        <div class="sec-title">帳戶總覽</div>
+                        <div class="stat-grid" style="margin-top:8px">
+                            <div class="stat-box"><div class="stat-lbl">USDT 可用</div><div class="stat-val" id="wallet-usdt-free">--</div></div>
+                            <div class="stat-box"><div class="stat-lbl">USDT 總計</div><div class="stat-val" id="wallet-usdt-total">--</div></div>
+                        </div>
+                    </div>
+                    <button class="btn-start" style="background:var(--purple);margin-top:auto" onclick="fetchFullBalance()">↻ 刷新餘額</button>
+                </div>
+            </aside>
+        </div>
+    </main>
+
+    <script>
+        // Global variables
+        let currentSymbol = 'BTCUSDT';
+        let currentInterval = '15m';
+        let currentExecutionMode = 'FULL_AUTO';
+        let mainChart, subChart;
+        let candleSeries, volumeSeries, rsiSeries;
+        let ws = null;
+
+        // Check authentication
+        function checkAuth() {
+            const token = localStorage.getItem('aqt_session');
+            if (!token) {
+                window.location.href = '/login.html';
+                return false;
+            }
+            return true;
+        }
+
+        // Initialize dashboard
+        async function initDashboard() {
+            if (!checkAuth()) return;
+            
+            showLoading(true);
+            
+            try {
+                // Load initial data
+                await Promise.all([
+                    loadExecutionMode(),
+                    load24h(currentSymbol),
+                    loadKlines(currentSymbol, currentInterval, 192, true),
+                    fetchBotStatus(),
+                    fetchBalance()
+                ]);
+                
+                // Setup WebSocket
+                connectWS(currentSymbol, currentInterval);
+                
+                // Setup periodic updates
+                setInterval(fetchBotStatus, 5000);
+                setInterval(fetchBalance, 10000);
+                
+            } catch (error) {
+                console.error('Dashboard initialization failed:', error);
+                showToast('系統初始化失敗', 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Execution mode management
+        async function loadExecutionMode() {
+            try {
+                const response = await authFetch('/api/execution_mode');
+                const data = await response.json();
+                currentExecutionMode = data.mode || 'FULL_AUTO';
+                updateExecutionModeUI();
+            } catch (error) {
+                console.error('Failed to load execution mode:', error);
+            }
+        }
+
+        async function switchExecutionMode(mode) {
+            if (mode === currentExecutionMode) return;
+            
+            showLoading(true);
+            
+            try {
+                const response = await authFetch('/api/set_execution_mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    currentExecutionMode = mode;
+                    updateExecutionModeUI();
+                    showToast(`已切換至 ${mode === 'FULL_AUTO' ? '全自動' : '半自動'} 模式`, 'success');
+                } else {
+                    showToast(data.error || '切換失敗', 'error');
+                }
+            } catch (error) {
+                showToast('網路錯誤，請稍後再試', 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function updateExecutionModeUI() {
+            const fullAutoBtn = document.getElementById('btn-full-auto');
+            const semiAutoBtn = document.getElementById('btn-semi-auto');
+            const statusEl = document.getElementById('mode-status');
+            
+            fullAutoBtn.classList.toggle('active', currentExecutionMode === 'FULL_AUTO');
+            semiAutoBtn.classList.toggle('active', currentExecutionMode === 'SEMI_AUTO');
+            
+            statusEl.textContent = currentExecutionMode === 'FULL_AUTO' ? '全自動模式' : '半自動模式';
+            statusEl.classList.toggle('active', true);
+        }
+
+        // Authentication helper
+        function authFetch(url, options = {}) {
+            const token = localStorage.getItem('aqt_session');
+            if (!token) {
+                window.location.href = '/login.html';
+                return Promise.reject('未認證');
+            }
+            
+            return fetch(url, {
+                ...options,
+                headers: {
+                    ...options.headers,
+                    'Authorization': `Bearer ${token}`
+                }
+            }).then(response => {
+                if (response.status === 401) {
+                    localStorage.removeItem('aqt_session');
+                    window.location.href = '/login.html';
+                    return Promise.reject('認證過期');
+                }
+                return response;
+            });
+        }
+
+        // Chart functions (simplified from original)
+        function initChart() {
+            const wrap = document.getElementById('chart-wrapper');
+            const mainH = Math.max(120, Math.floor(wrap.clientHeight * 0.75));
+            const subH = Math.max(60, wrap.clientHeight - mainH);
+
+            mainChart = LightweightCharts.createChart(document.getElementById('chart-main'), {
+                layout: { background: { color: '#0B0E14' }, textColor: '#6B7394' },
+                grid: { vertLines: { color: '#1E2435' }, horzLines: { color: '#1E2435' } },
+                width: wrap.clientWidth,
+                height: mainH,
+            });
+
+            candleSeries = mainChart.addCandlestickSeries({
+                upColor: '#00ff9d', downColor: '#ff3b69',
+                borderUpColor: '#00ff9d', borderDownColor: '#ff3b69',
+                wickUpColor: '#00ff9d', wickDownColor: '#ff3b69',
+            });
+
+            subChart = LightweightCharts.createChart(document.getElementById('chart-sub'), {
+                layout: { background: { color: '#0B0E14' }, textColor: '#6B7394' },
+                grid: { vertLines: { color: '#1E2435' }, horzLines: { color: '#1E2435' } },
+                width: wrap.clientWidth,
+                height: subH,
+            });
+
+            volumeSeries = subChart.addHistogramSeries({
+                color: '#26a69a', priceFormat: { type: 'volume' },
+            });
+        }
+
+        async function loadKlines(symbol, interval, limit, resetGrid) {
+            showLoading(true);
+            try {
+                const response = await authFetch(`/api/klines/${symbol}?interval=${interval}&limit=${limit}`);
+                const data = await response.json();
+                
+                if (data.error) throw new Error(data.error);
+                
+                const adj = data.map(k => ({ ...k, time: k.time }));
+                candleSeries.setData(adj);
+                
+                volumeSeries.setData(adj.map(k => ({
+                    time: k.time,
+                    value: k.volume,
+                    color: k.close >= k.open ? 'rgba(0,255,157,.35)' : 'rgba(255,59,105,.35)',
+                })));
+                
+                mainChart.timeScale().fitContent();
+                
+                if (adj.length > 0) {
+                    const last = adj[adj.length - 1];
+                    updateLivePx(last.close, true);
+                }
+            } catch (error) {
+                console.error('K-line loading failed:', error);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function load24h(symbol) {
+            try {
+                const response = await authFetch(`/api/ticker24h/${symbol}`);
+                const data = await response.json();
+                
+                if (data.error) return;
+                
+                updateLivePx(data.price, true);
+                const badge = document.getElementById('badge-change');
+                badge.style.display = '';
+                badge.textContent = (data.change >= 0 ? '+' : '') + data.change.toFixed(2) + '%';
+                badge.className = 'badge ' + (data.change >= 0 ? 'up' : 'down');
+            } catch (error) {
+                console.error('24h data loading failed:', error);
+            }
+        }
+
+        async function fetchBotStatus() {
+            try {
+                const response = await authFetch('/api/grid_status');
+                const data = await response.json();
+                
+                const running = data.running;
+                const pill = document.getElementById('bot-pill');
+                pill.classList.toggle('running', running);
+                document.getElementById('bot-pill-text').textContent = running ? '機器人執行中' : '未啟動';
+                
+                const dot = document.getElementById('bot-dot');
+                const txt = document.getElementById('bot-status-text');
+                dot.className = `bot-status-dot ${running ? 'running' : 'stopped'}`;
+                txt.className = `bot-status-text ${running ? 'running' : 'stopped'}`;
+                txt.textContent = running ? '✅ 機器人執行中' : '⏸ 機器人未啟動';
+            } catch (error) {
+                console.error('Bot status check failed:', error);
+            }
+        }
+
+        async function fetchBalance() {
+            try {
+                const response = await authFetch('/api/balance');
+                const data = await response.json();
+                
+                document.getElementById('balance-val').textContent = data.free?.toFixed(2) || '--';
+                document.getElementById('wallet-usdt-free').textContent = data.free?.toFixed(2) || '--';
+                document.getElementById('wallet-usdt-total').textContent = data.total?.toFixed(2) || '--';
+            } catch (error) {
+                console.error('Balance check failed:', error);
+            }
+        }
+
+        function connectWS(symbol, interval) {
+            if (ws) ws.close();
+            
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${proto}//${location.host}/ws/kline/${symbol}?interval=${interval}`);
+            
+            ws.onopen = () => {
+                document.getElementById('ws-status').className = 'ws-status ok';
+                document.getElementById('ws-label').textContent = '即時更新';
+            };
+            
+            ws.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.e === 'kline') {
+                        const candle = {
+                            time: Math.floor(data.k.t / 1000),
+                            open: +data.k.o,
+                            high: +data.k.h,
+                            low: +data.k.l,
+                            close: +data.k.c
+                        };
+                        candleSeries.update(candle);
+                        updateLivePx(+data.k.c, true);
+                    }
+                } catch (error) {
+                    console.error('WebSocket message error:', error);
+                }
+            };
+            
+            ws.onerror = () => {
+                document.getElementById('ws-status').className = 'ws-status err';
+                document.getElementById('ws-label').textContent = '連線錯誤';
+            };
+        }
+
+        // Utility functions
+        function showLoading(show) {
+            document.getElementById('loadingOverlay').classList.toggle('show', show);
+        }
+
+        function showToast(message, type = 'info') {
+            // Simple toast implementation
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 12px 16px;
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: 600;
+                z-index: 10000;
+                color: ${type === 'error' ? '#ff3b69' : type === 'success' ? '#00ff9d' : '#4D9FFF'};
+                background: rgba(24, 28, 39, 0.9);
+                border: 1px solid ${type === 'error' ? '#ff3b69' : type === 'success' ? '#00ff9d' : '#4D9FFF'};
+            `;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        function updateLivePx(price, animate = false) {
+            const el = document.getElementById('live-px');
+            el.textContent = '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function switchTab(name) {
+            document.querySelectorAll('#right-col .tab').forEach((t, i) => {
+                const panels = ['settings', 'bot', 'wallet'];
+                t.classList.toggle('active', panels[i] === name);
+            });
+            document.querySelectorAll('#right-col .tab-panel').forEach(p => p.classList.remove('active'));
+            const el = document.getElementById(`panel-${name}`);
+            if (el) el.classList.add('active');
+        }
+
+        function logout() {
+            localStorage.removeItem('aqt_session');
+            window.location.href = '/login.html';
+        }
+
+        function onSymbolChange() {
+            currentSymbol = document.getElementById('sel-symbol').value;
+            load24h(currentSymbol);
+            loadKlines(currentSymbol, currentInterval, 192, true);
+            connectWS(currentSymbol, currentInterval);
+        }
+
+        function setIntervalBtn(interval) {
+            currentInterval = interval;
+            document.querySelectorAll('.interval-btn').forEach(b =>
+                b.classList.toggle('active', b.textContent.trim() === interval)
+            );
+            loadKlines(currentSymbol, currentInterval, 192, false);
+            connectWS(currentSymbol, currentInterval);
+        }
+
+        // Initialize dashboard on load
+        document.addEventListener('DOMContentLoaded', initDashboard);
+    </script>
+</body>
+</html>
