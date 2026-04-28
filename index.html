@@ -418,6 +418,41 @@
     .wallet-asset-qty  { font-size: 10px; color: var(--muted); }
     .wallet-asset-val  { font-size: 11px; font-weight: 700; color: var(--lower); }
 
+    /* ════ AI Scoring Engine ════ */
+    .ai-engine-block {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .ai-engine-title {
+      font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1.5px; color: var(--accent); margin-bottom: 8px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .ai-engine-title::before {
+      content: ''; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); animation: pulse 2s infinite;
+    }
+    .ai-score-row { margin-bottom: 6px; }
+    .ai-score-label {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 3px; font-size: 9px;
+    }
+    .ai-score-name { color: var(--muted); font-weight: 600; letter-spacing: .5px; }
+    .ai-score-val  { color: var(--text); font-weight: 700; font-family: var(--mono); font-size: 9px; }
+    .ai-bar-track {
+      height: 4px; background: var(--hover); border-radius: 2px; overflow: hidden;
+    }
+    .ai-bar-fill {
+      height: 100%; border-radius: 2px;
+      background: linear-gradient(90deg, var(--accent), var(--lower));
+      transition: width .6s cubic-bezier(.4,0,.2,1);
+    }
+    .ai-bar-fill.bear  { background: linear-gradient(90deg, var(--sell), #ff8c42); }
+    .ai-bar-fill.whale { background: linear-gradient(90deg, #9932CC, #e040fb); }
+    .ai-bar-fill.news  { background: linear-gradient(90deg, #F5D300, #ff9800); }
+    .ai-bar-fill.fg    { background: linear-gradient(90deg, #00bfff, #4D9FFF); }
+
     /* ════ Toast Notifications ════ */
     #toast-container {
       position: fixed; bottom: 20px; right: 20px;
@@ -628,7 +663,76 @@
 <!-- ════ Main ════ -->
 <main>
 
-  <!-- ──── 圖表欄 ──── -->
+  <!-- ──── 左欄：市場掃描 ──── -->
+  <div id="left-col">
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted)">📡 市場掃描</span>
+      <button class="btn-apply" onclick="refreshSuggest()" style="font-size:9px;padding:2px 7px;">↻ 刷新</button>
+    </div>
+    <!-- AI 分析引擎 -->
+    <div class="ai-engine-block">
+      <div class="ai-engine-title">AI 分析引擎 · Scoring Engine</div>
+
+      <div class="ai-score-row">
+        <div class="ai-score-label">
+          <span class="ai-score-name">技術面 TECH</span>
+          <span class="ai-score-val" id="ai-tech-val">0.73</span>
+        </div>
+        <div class="ai-bar-track"><div class="ai-bar-fill" id="ai-tech-bar" style="width:73%"></div></div>
+      </div>
+
+      <div class="ai-score-row">
+        <div class="ai-score-label">
+          <span class="ai-score-name">鯨魚動向 WHALE</span>
+          <span class="ai-score-val" id="ai-whale-val">0.58</span>
+        </div>
+        <div class="ai-bar-track"><div class="ai-bar-fill whale" id="ai-whale-bar" style="width:58%"></div></div>
+      </div>
+
+      <div class="ai-score-row">
+        <div class="ai-score-label">
+          <span class="ai-score-name">新聞情緒 NEWS</span>
+          <span class="ai-score-val" id="ai-news-val">0.41</span>
+        </div>
+        <div class="ai-bar-track"><div class="ai-bar-fill news" id="ai-news-bar" style="width:41%"></div></div>
+      </div>
+
+      <div class="ai-score-row">
+        <div class="ai-score-label">
+          <span class="ai-score-name">恐慌貪婪 F&G</span>
+          <span class="ai-score-val" id="ai-fg-val">0.62</span>
+        </div>
+        <div class="ai-bar-track"><div class="ai-bar-fill fg" id="ai-fg-bar" style="width:62%"></div></div>
+      </div>
+
+      <div class="ai-score-row">
+        <div class="ai-score-label">
+          <span class="ai-score-name">盤口動能 ORDERFLOW</span>
+          <span class="ai-score-val" id="ai-of-val">0.87</span>
+        </div>
+        <div class="ai-bar-track"><div class="ai-bar-fill" id="ai-of-bar" style="width:87%"></div></div>
+      </div>
+    </div>
+
+    <!-- 市場指標 -->
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div class="indicator-row">
+        <div class="ind-box" style="grid-column:1/-1">
+          <div class="ind-lbl">市場狀態</div>
+          <div class="ind-val" id="ind-regime"><span class="regime-badge regime-RANGING">--</span></div>
+        </div>
+        <div class="ind-box"><div class="ind-lbl">ATR(14)</div><div class="ind-val" id="ind-atr">--</div></div>
+        <div class="ind-box"><div class="ind-lbl">ATR %</div><div class="ind-val" id="ind-atr-pct">--</div></div>
+        <div class="ind-box"><div class="ind-lbl">布林通道寬</div><div class="ind-val" id="ind-bbw">--</div></div>
+        <div class="ind-box"><div class="ind-lbl">年化波動率</div><div class="ind-val" id="ind-hv">--</div></div>
+      </div>
+    </div>
+    <!-- 幣種列表將在下個階段放入此處 -->
+    <div style="flex:1;overflow-y:auto;padding:10px 12px" id="symbol-list-container">
+    </div>
+  </div><!-- /left-col -->
+
+  <!-- ──── 中欄：圖表 ──── -->
   <div id="chart-col">
 
     <!-- K 線圖 -->
@@ -699,347 +803,326 @@
 
   </div><!-- /chart-col -->
 
-  <!-- ──── 右側面板 ──── -->
-  <aside>
-    <div class="tabs">
-      <div class="tab active" onclick="switchTab('suggest')">💡 策略</div>
-      <div class="tab" onclick="switchTab('settings')">📐 設定</div>
-      <div class="tab" onclick="switchTab('bot')">🤖 機器人</div>
-      <div class="tab" onclick="switchTab('wallet')">💼 錢包</div>
-    </div>
-
-    <!-- ═══ 策略建議 ═══ -->
-    <div class="tab-panel active" id="panel-suggest">
-      <div>
-        <div class="sec-title">市場指標</div>
-        <div class="indicator-row">
-          <div class="ind-box" style="grid-column:1/-1">
-            <div class="ind-lbl">市場狀態</div>
-            <div class="ind-val" id="ind-regime"><span class="regime-badge regime-RANGING">--</span></div>
-          </div>
-          <div class="ind-box"><div class="ind-lbl">ATR(14)</div><div class="ind-val" id="ind-atr">--</div></div>
-          <div class="ind-box"><div class="ind-lbl">ATR %</div><div class="ind-val" id="ind-atr-pct">--</div></div>
-          <div class="ind-box"><div class="ind-lbl">布林通道寬</div><div class="ind-val" id="ind-bbw">--</div></div>
-          <div class="ind-box"><div class="ind-lbl">年化波動率</div><div class="ind-val" id="ind-hv">--</div></div>
-        </div>
+  <!-- ──── 右欄：下單控制台 + 持倉 ──── -->
+  <div id="right-col">
+    <aside>
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('settings')">📐 設定</div>
+        <div class="tab" onclick="switchTab('bot')">🤖 機器人</div>
+        <div class="tab" onclick="switchTab('wallet')">💼 錢包</div>
       </div>
-      <div>
-        <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between;">
-          <span>三組策略建議</span>
-          <button class="btn-apply" onclick="refreshSuggest()" style="font-size:9px;padding:2px 7px;">↻ 刷新</button>
+
+      <!-- ═══ 網格設定 ═══ -->
+      <div class="tab-panel active" id="panel-settings">
+
+        <!-- 上下限 -->
+        <div>
+          <div class="sec-title">網格區間</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+
+            <div class="line-card upper">
+              <div class="lc-head"><div class="lc-dot" style="background:var(--upper)"></div>上限 UPPER</div>
+              <div class="lc-price upper" id="upper-disp">---</div>
+              <input class="lc-input" type="number" id="upper-inp" step="0.01" placeholder="輸入上限"
+                     oninput="onManualInput('upper')" onblur="onManualBlur()">
+            </div>
+
+            <div class="line-card lower">
+              <div class="lc-head"><div class="lc-dot" style="background:var(--lower)"></div>下限 LOWER</div>
+              <div class="lc-price lower" id="lower-disp">---</div>
+              <input class="lc-input" type="number" id="lower-inp" step="0.01" placeholder="輸入下限"
+                     oninput="onManualInput('lower')" onblur="onManualBlur()">
+            </div>
+
+            <!-- Click-to-Set -->
+            <div style="display:flex;gap:5px">
+              <button class="btn-click-set" style="flex:1" onclick="startClickSet('upper')" id="btn-cs-upper">
+                📍 點擊設上限
+              </button>
+              <button class="btn-click-set" style="flex:1" onclick="startClickSet('lower')" id="btn-cs-lower">
+                📍 點擊設下限
+              </button>
+            </div>
+
+            <!-- 止損 -->
+            <div class="line-card stoploss">
+              <div class="lc-head"><div class="lc-dot" style="background:var(--sell)"></div>
+                止損 STOP LOSS <span style="font-size:9px;color:var(--muted);margin-left:4px">（選填，0=停用）</span>
+              </div>
+              <div class="lc-price stoploss" id="sl-disp">停用</div>
+              <input class="lc-input" type="number" id="sl-inp" step="0.01" min="0"
+                     placeholder="止損價格（需低於下限）" oninput="onSlInput()">
+            </div>
+
+            <!-- 統計 -->
+            <div class="stat-grid">
+              <div class="stat-box"><div class="stat-lbl">區間幅度</div><div class="stat-val" id="st-range">--</div></div>
+              <div class="stat-box"><div class="stat-lbl">區間%</div><div class="stat-val" id="st-pct">--</div></div>
+              <div class="stat-box"><div class="stat-lbl">每格格距</div><div class="stat-val" id="st-spacing">--</div></div>
+              <div class="stat-box"><div class="stat-lbl">單格淨利</div><div class="stat-val" id="st-gpct">--</div></div>
+            </div>
+
+            <div class="fee-warn" id="fee-warn"></div>
+          </div>
         </div>
-        <div id="suggest-body"><div class="suggest-loading">🔄 計算中…</div></div>
-      </div>
-    </div>
 
-    <!-- ═══ 網格設定 ═══ -->
-    <div class="tab-panel" id="panel-settings">
-
-      <!-- 上下限 -->
-      <div>
-        <div class="sec-title">網格區間</div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-
-          <div class="line-card upper">
-            <div class="lc-head"><div class="lc-dot" style="background:var(--upper)"></div>上限 UPPER</div>
-            <div class="lc-price upper" id="upper-disp">---</div>
-            <input class="lc-input" type="number" id="upper-inp" step="0.01" placeholder="輸入上限"
-                   oninput="onManualInput('upper')" onblur="onManualBlur()">
+        <!-- 交易模式 -->
+        <div>
+          <div class="sec-title">交易模式</div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <label style="flex:1;cursor:pointer">
+              <input type="radio" name="trade-mode" id="mode-semi" value="semi" checked onchange="onModeChange()">
+              <div class="mode-card" id="mode-card-semi" style="border-color:var(--accent)">
+                <div style="font-size:12px;font-weight:800;color:var(--accent)">🎯 半自動</div>
+                <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">你設上下限<br>機器人執行</div>
+              </div>
+            </label>
+            <label style="flex:1;cursor:pointer">
+              <input type="radio" name="trade-mode" id="mode-auto" value="auto" onchange="onModeChange()">
+              <div class="mode-card" id="mode-card-auto">
+                <div style="font-size:12px;font-weight:800;color:var(--muted)">🤖 全自動</div>
+                <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">ATR/EMA 動態<br>計算上下限</div>
+              </div>
+            </label>
           </div>
-
-          <div class="line-card lower">
-            <div class="lc-head"><div class="lc-dot" style="background:var(--lower)"></div>下限 LOWER</div>
-            <div class="lc-price lower" id="lower-disp">---</div>
-            <input class="lc-input" type="number" id="lower-inp" step="0.01" placeholder="輸入下限"
-                   oninput="onManualInput('lower')" onblur="onManualBlur()">
+          <div id="auto-desc" style="display:none;background:rgba(77,159,255,.08);border:1px solid rgba(77,159,255,.2);border-radius:7px;padding:8px 10px;font-size:10px;color:var(--muted);line-height:1.6;margin-top:8px">
+            🤖 機器人每 30 秒根據 ATR×EMA 自動計算最佳上下限並重新鋪設網格。
           </div>
+        </div>
 
-          <!-- Click-to-Set -->
-          <div style="display:flex;gap:5px">
-            <button class="btn-click-set" style="flex:1" onclick="startClickSet('upper')" id="btn-cs-upper">
-              📍 點擊設上限
+        <!-- 市場類型 -->
+        <div id="market-settings">
+          <div class="sec-title">市場類型</div>
+          <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
+            <div class="cfg-row">
+              <label>市場</label>
+              <select id="sel-market-type" onchange="onMarketTypeChange()">
+                <option value="SPOT">🏦 現貨 (SPOT)</option>
+                <option value="MARGIN">📊 槓桿現貨 (MARGIN)</option>
+                <option value="FUTURES">🚀 合約 (FUTURES)</option>
+              </select>
+            </div>
+            <div class="cfg-row" id="row-leverage" style="display:none">
+              <label>槓桿倍數</label>
+              <div style="display:flex;align-items:center;gap:6px;flex:1">
+                <input type="range" id="inp-leverage" min="1" max="125" value="1"
+                       style="flex:1" oninput="document.getElementById('lev-disp').textContent=this.value+'x'">
+                <span id="lev-disp" style="font-size:11px;color:var(--accent);min-width:30px;text-align:right">1x</span>
+              </div>
+            </div>
+            <div class="cfg-row" id="row-margin-type" style="display:none">
+              <label>保證金模式</label>
+              <select id="sel-margin-type">
+                <option value="CROSSED">全倉 (CROSSED)</option>
+                <option value="ISOLATED">逐倉 (ISOLATED)</option>
+              </select>
+            </div>
+            <div class="cfg-row" id="row-pos-side" style="display:none">
+              <label>持倉模式</label>
+              <select id="sel-pos-side">
+                <option value="BOTH">單向持倉 (BOTH)</option>
+                <option value="HEDGE">雙向持倉 (HEDGE)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 半自動設定 -->
+        <div id="semi-settings">
+          <div class="sec-title">交易設定</div>
+          <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
+            <div class="cfg-row">
+              <label>交易方向</label>
+              <select id="sel-dir">
+                <option value="做多 (Long)">📈 做多 (Long)</option>
+                <option value="做空 (Short)">📉 做空 (Short)</option>
+              </select>
+            </div>
+            <div class="cfg-row">
+              <label>網格數量</label>
+              <input type="number" id="inp-gc" value="10" min="2" max="200" oninput="updateStats();calcQtyFromInvestment()">
+            </div>
+            <div class="cfg-row">
+              <label>總投入(USDT)</label>
+              <input type="number" id="inp-investment" value="100" step="10" min="1" oninput="calcQtyFromInvestment()">
+            </div>
+            <div class="calc-qty-row">
+              <span>每格數量</span><span class="calc-qty-val" id="calc-qty-disp">-- 個</span>
+            </div>
+            <div id="min-order-warn" style="display:none;font-size:10px;color:var(--sell);margin-top:2px">
+              ⚠️ 單格金額低於 Binance 最低 5 USDT
+            </div>
+          </div>
+        </div>
+
+        <!-- 全自動設定 -->
+        <div id="auto-settings" style="display:none">
+          <div class="sec-title">全自動設定</div>
+          <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
+            <div class="cfg-row">
+              <label>交易方向</label>
+              <select id="sel-dir-auto">
+                <option value="做多 (Long)">📈 做多 (Long)</option>
+                <option value="做空 (Short)">📉 做空 (Short)</option>
+              </select>
+            </div>
+            <div class="cfg-row">
+              <label>總投入(USDT)</label>
+              <input type="number" id="inp-investment-auto" value="500" step="50" min="1" oninput="calcQtyFromInvestment()">
+            </div>
+            <div class="calc-qty-row">
+              <span>每格數量（估算）</span><span class="calc-qty-val" id="calc-qty-auto-disp">-- 個</span>
+            </div>
+            <div class="cfg-row">
+              <label>資金上限(U)</label>
+              <input type="number" id="inp-capital" value="1000" step="100" min="10">
+            </div>
+          </div>
+        </div>
+
+        <!-- 歷史記錄 -->
+        <div style="flex:1;min-height:0">
+          <div class="sec-title">最近記錄</div>
+          <div style="margin-top:8px;overflow-x:auto">
+            <table>
+              <thead><tr><th>幣種</th><th>模式</th><th>上限</th><th>下限</th><th>狀態</th></tr></thead>
+              <tbody id="hist-body">
+                <tr><td colspan="5" style="text-align:center;padding:8px;color:var(--muted)">載入中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div><!-- /panel-settings -->
+
+      <!-- ═══ 機器人 ═══ -->
+      <div class="tab-panel" id="panel-bot">
+        <div>
+          <div class="sec-title">執行狀態</div>
+          <div class="bot-status-row" style="margin-top:8px">
+            <div class="bot-status-dot stopped" id="bot-dot"></div>
+            <div>
+              <div class="bot-status-text stopped" id="bot-status-text">機器人未啟動</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:1px" id="bot-symbol-text">--</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═ 執行模式切換 ═ -->
+        <div>
+          <div class="sec-title" style="display:flex;align-items:center;gap:6px">
+            執行模式
+            <span id="exec-mode-badge" style="font-size:10px;color:var(--muted);font-weight:500">FULL_AUTO</span>
+          </div>
+          <div class="exec-mode-row">
+            <button class="exec-mode-btn active-full" id="btn-full-auto" onclick="setExecutionMode('FULL_AUTO')">
+              🤖 FULL_AUTO<br><span style="font-weight:400;font-size:9px">全自動執行</span>
             </button>
-            <button class="btn-click-set" style="flex:1" onclick="startClickSet('lower')" id="btn-cs-lower">
-              📍 點擊設下限
+            <button class="exec-mode-btn" id="btn-semi-auto" onclick="setExecutionMode('SEMI_AUTO')">
+              🎯 SEMI_AUTO<br><span style="font-weight:400;font-size:9px">等待人工確認</span>
             </button>
           </div>
-
-          <!-- 止損 -->
-          <div class="line-card stoploss">
-            <div class="lc-head"><div class="lc-dot" style="background:var(--sell)"></div>
-              止損 STOP LOSS <span style="font-size:9px;color:var(--muted);margin-left:4px">（選填，0=停用）</span>
-            </div>
-            <div class="lc-price stoploss" id="sl-disp">停用</div>
-            <input class="lc-input" type="number" id="sl-inp" step="0.01" min="0"
-                   placeholder="止損價格（需低於下限）" oninput="onSlInput()">
+          <div id="semi-auto-desc" style="display:none;margin-top:6px;background:rgba(245,211,0,.08);border:1px solid rgba(245,211,0,.2);border-radius:7px;padding:7px 9px;font-size:10px;color:var(--muted);line-height:1.6">
+            🎯 SEMI_AUTO：機器人計算訊號並寫入確認佇列，由您在下方面板手動確認後才真正下單。
           </div>
+        </div>
 
-          <!-- 統計 -->
-          <div class="stat-grid">
-            <div class="stat-box"><div class="stat-lbl">區間幅度</div><div class="stat-val" id="st-range">--</div></div>
-            <div class="stat-box"><div class="stat-lbl">區間%</div><div class="stat-val" id="st-pct">--</div></div>
-            <div class="stat-box"><div class="stat-lbl">每格格距</div><div class="stat-val" id="st-spacing">--</div></div>
-            <div class="stat-box"><div class="stat-lbl">單格淨利</div><div class="stat-val" id="st-gpct">--</div></div>
+        <!-- ═ 系統安全鎖 ═ -->
+        <div>
+          <div class="sec-title" style="display:flex;align-items:center;gap:6px">
+            系統安全鎖
+            <span id="lock-badge" style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(239,83,80,.15);color:var(--sell);font-weight:600">🔒 已鎖定</span>
           </div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.6">
+            安全鎖關閉時，機器人 Observation 持續運行但所有下單執行均暫停。
+          </div>
+          <div class="btn-row" style="margin-top:0">
+            <button class="btn-start" id="btn-unlock" onclick="showUnlockModal()" style="background:var(--lower);font-size:11px;padding:6px 10px">
+              🔓 解鎖系統
+            </button>
+            <button class="btn-stop" id="btn-lock" onclick="doLockSystem()" style="font-size:11px;padding:6px 10px">
+              🔒 重新鎖定
+            </button>
+          </div>
+        </div>
 
-          <div class="fee-warn" id="fee-warn"></div>
+        <!-- ═ SEMI_AUTO 訊號確認面板 ═ -->
+        <div id="signal-panel">
+          <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between">
+            <span>
+              待確認訊號
+              <span id="signal-count-badge" class="signal-badge" style="display:none">0</span>
+            </span>
+            <button class="btn-apply" onclick="fetchPendingSignals()" style="font-size:9px;padding:2px 7px">↻ 刷新</button>
+          </div>
+          <div class="signal-list" id="signal-list">
+            <div class="signal-empty">目前無待確認訊號</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="stat-grid" style="margin-top:8px">
+            <div class="stat-box"><div class="stat-lbl">幣種</div><div class="stat-val" id="bot-symbol">--</div></div>
+            <div class="stat-box"><div class="stat-lbl">網格數</div><div class="stat-val" id="bot-grids">--</div></div>
+            <div class="stat-box"><div class="stat-lbl">上限</div><div class="stat-val" style="color:var(--upper)" id="bot-upper">--</div></div>
+            <div class="stat-box"><div class="stat-lbl">下限</div><div class="stat-val" style="color:var(--lower)" id="bot-lower">--</div></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-title">網格控制</div>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn-start" id="btn-save" onclick="saveGrid()">🚀 確認設定並啟動網格</button>
+            <button class="btn-stop" id="btn-stop" onclick="confirmStopGrid()">⏹ 停止網格機器人</button>
+            <button class="btn-kill" id="btn-kill" onclick="confirmKillSwitch()">☠ 進階 Kill Switch（撤銷交易所掛單）</button>
+          </div>
+        </div>
+
+        <div style="background:var(--hover);border-radius:8px;padding:10px;font-size:11px;color:var(--muted);line-height:1.7">
+          <div style="font-weight:700;color:var(--text);margin-bottom:5px">📌 操作流程</div>
+          <div>① 用「點擊設上/下限」按鈕在圖表取值</div>
+          <div>② 查看「策略建議」選擇適合方案</div>
+          <div>③ 設定格數與總投入金額</div>
+          <div>④ 啟動網格，機器人進入監控</div>
+          <div>⑤ 觸及格線時自動下單來回獲利</div>
         </div>
       </div>
 
-      <!-- 交易模式 -->
-      <div>
-        <div class="sec-title">交易模式</div>
-        <div style="display:flex;gap:6px;margin-top:8px">
-          <label style="flex:1;cursor:pointer">
-            <input type="radio" name="trade-mode" id="mode-semi" value="semi" checked onchange="onModeChange()">
-            <div class="mode-card" id="mode-card-semi" style="border-color:var(--accent)">
-              <div style="font-size:12px;font-weight:800;color:var(--accent)">🎯 半自動</div>
-              <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">你設上下限<br>機器人執行</div>
-            </div>
-          </label>
-          <label style="flex:1;cursor:pointer">
-            <input type="radio" name="trade-mode" id="mode-auto" value="auto" onchange="onModeChange()">
-            <div class="mode-card" id="mode-card-auto">
-              <div style="font-size:12px;font-weight:800;color:var(--muted)">🤖 全自動</div>
-              <div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4">ATR/EMA 動態<br>計算上下限</div>
-            </div>
-          </label>
-        </div>
-        <div id="auto-desc" style="display:none;background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.2);border-radius:7px;padding:8px 10px;font-size:10px;color:var(--muted);line-height:1.6;margin-top:8px">
-          🤖 機器人每 30 秒根據 ATR×EMA 自動計算最佳上下限並重新鋪設網格。
-        </div>
-      </div>
-
-      <!-- 市場類型 -->
-      <div id="market-settings">
-        <div class="sec-title">市場類型</div>
-        <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
-          <div class="cfg-row">
-            <label>市場</label>
-            <select id="sel-market-type" onchange="onMarketTypeChange()">
-              <option value="SPOT">🏦 現貨 (SPOT)</option>
-              <option value="MARGIN">📊 槓桿現貨 (MARGIN)</option>
-              <option value="FUTURES">🚀 合約 (FUTURES)</option>
-            </select>
-          </div>
-          <div class="cfg-row" id="row-leverage" style="display:none">
-            <label>槓桿倍數</label>
-            <div style="display:flex;align-items:center;gap:6px;flex:1">
-              <input type="range" id="inp-leverage" min="1" max="125" value="1"
-                     style="flex:1" oninput="document.getElementById('lev-disp').textContent=this.value+'x'">
-              <span id="lev-disp" style="font-size:11px;color:var(--accent);min-width:30px;text-align:right">1x</span>
-            </div>
-          </div>
-          <div class="cfg-row" id="row-margin-type" style="display:none">
-            <label>保證金模式</label>
-            <select id="sel-margin-type">
-              <option value="CROSSED">全倉 (CROSSED)</option>
-              <option value="ISOLATED">逐倉 (ISOLATED)</option>
-            </select>
-          </div>
-          <div class="cfg-row" id="row-pos-side" style="display:none">
-            <label>持倉模式</label>
-            <select id="sel-pos-side">
-              <option value="BOTH">單向持倉 (BOTH)</option>
-              <option value="HEDGE">雙向持倉 (HEDGE)</option>
-            </select>
+      <!-- ═══ 錢包 ═══ -->
+      <div class="tab-panel" id="panel-wallet">
+        <div>
+          <div class="sec-title">帳戶總覽</div>
+          <div class="stat-grid" style="margin-top:8px">
+            <div class="stat-box"><div class="stat-lbl">USDT 可用</div><div class="stat-val" id="wallet-usdt-free">--</div></div>
+            <div class="stat-box"><div class="stat-lbl">USDT 總計</div><div class="stat-val" id="wallet-usdt-total">--</div></div>
           </div>
         </div>
-      </div>
-
-      <!-- 半自動設定 -->
-      <div id="semi-settings">
-        <div class="sec-title">交易設定</div>
-        <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
-          <div class="cfg-row">
-            <label>交易方向</label>
-            <select id="sel-dir">
-              <option value="做多 (Long)">📈 做多 (Long)</option>
-              <option value="做空 (Short)">📉 做空 (Short)</option>
-            </select>
-          </div>
-          <div class="cfg-row">
-            <label>網格數量</label>
-            <input type="number" id="inp-gc" value="10" min="2" max="200" oninput="updateStats();calcQtyFromInvestment()">
-          </div>
-          <div class="cfg-row">
-            <label>總投入(USDT)</label>
-            <input type="number" id="inp-investment" value="100" step="10" min="1" oninput="calcQtyFromInvestment()">
-          </div>
-          <div class="calc-qty-row">
-            <span>每格數量</span><span class="calc-qty-val" id="calc-qty-disp">-- 個</span>
-          </div>
-          <div id="min-order-warn" style="display:none;font-size:10px;color:var(--sell);margin-top:2px">
-            ⚠️ 單格金額低於 Binance 最低 5 USDT
+        <div>
+          <div class="sec-title">持倉列表</div>
+          <div id="wallet-positions" style="margin-top:8px;display:flex;flex-direction:column;gap:3px">
+            <div style="text-align:center;color:var(--muted);font-size:11px;padding:10px">點擊下方刷新</div>
           </div>
         </div>
-      </div>
-
-      <!-- 全自動設定 -->
-      <div id="auto-settings" style="display:none">
-        <div class="sec-title">全自動設定</div>
-        <div style="display:flex;flex-direction:column;gap:2px;margin-top:8px">
-          <div class="cfg-row">
-            <label>交易方向</label>
-            <select id="sel-dir-auto">
-              <option value="做多 (Long)">📈 做多 (Long)</option>
-              <option value="做空 (Short)">📉 做空 (Short)</option>
-            </select>
-          </div>
-          <div class="cfg-row">
-            <label>總投入(USDT)</label>
-            <input type="number" id="inp-investment-auto" value="500" step="50" min="1" oninput="calcQtyFromInvestment()">
-          </div>
-          <div class="calc-qty-row">
-            <span>每格數量（估算）</span><span class="calc-qty-val" id="calc-qty-auto-disp">-- 個</span>
-          </div>
-          <div class="cfg-row">
-            <label>資金上限(U)</label>
-            <input type="number" id="inp-capital" value="1000" step="100" min="10">
+        <div>
+          <div class="sec-title">持倉均價線（紫色）</div>
+          <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+            <input type="number" id="inp-avg-cost" step="0.01" min="0"
+                   placeholder="輸入持倉均價…"
+                   style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px"
+                   oninput="updateAvgCostLine()">
+            <button class="btn-apply" onclick="clearAvgCostLine()" style="white-space:nowrap">清除</button>
           </div>
         </div>
+        <button class="btn-start" style="background:var(--purple);margin-top:auto" onclick="fetchFullBalance()">
+          ↻ 刷新餘額
+        </button>
       </div>
 
-      <!-- 歷史記錄 -->
-      <div style="flex:1;min-height:0">
-        <div class="sec-title">最近記錄</div>
-        <div style="margin-top:8px;overflow-x:auto">
-          <table>
-            <thead><tr><th>幣種</th><th>模式</th><th>上限</th><th>下限</th><th>狀態</th></tr></thead>
-            <tbody id="hist-body">
-              <tr><td colspan="5" style="text-align:center;padding:8px;color:var(--muted)">載入中…</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+    </aside>
+  </div><!-- /right-col -->
 
-    </div><!-- /panel-settings -->
-
-    <!-- ═══ 機器人 ═══ -->
-    <div class="tab-panel" id="panel-bot">
-      <div>
-        <div class="sec-title">執行狀態</div>
-        <div class="bot-status-row" style="margin-top:8px">
-          <div class="bot-status-dot stopped" id="bot-dot"></div>
-          <div>
-            <div class="bot-status-text stopped" id="bot-status-text">機器人未啟動</div>
-            <div style="font-size:10px;color:var(--muted);margin-top:1px" id="bot-symbol-text">--</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ═ 執行模式切換 ═ -->
-      <div>
-        <div class="sec-title" style="display:flex;align-items:center;gap:6px">
-          執行模式
-          <span id="exec-mode-badge" style="font-size:10px;color:var(--muted);font-weight:500">FULL_AUTO</span>
-        </div>
-        <div class="exec-mode-row">
-          <button class="exec-mode-btn active-full" id="btn-full-auto" onclick="setExecutionMode('FULL_AUTO')">
-            🤖 FULL_AUTO<br><span style="font-weight:400;font-size:9px">全自動執行</span>
-          </button>
-          <button class="exec-mode-btn" id="btn-semi-auto" onclick="setExecutionMode('SEMI_AUTO')">
-            🎯 SEMI_AUTO<br><span style="font-weight:400;font-size:9px">等待人工確認</span>
-          </button>
-        </div>
-        <div id="semi-auto-desc" style="display:none;margin-top:6px;background:rgba(227,179,65,.08);border:1px solid rgba(227,179,65,.2);border-radius:7px;padding:7px 9px;font-size:10px;color:var(--muted);line-height:1.6">
-          🎯 SEMI_AUTO：機器人計算訊號並寫入確認佇列，由您在下方面板手動確認後才真正下單。
-        </div>
-      </div>
-
-      <!-- ═ 系統安全鎖 ═ -->
-      <div>
-        <div class="sec-title" style="display:flex;align-items:center;gap:6px">
-          系統安全鎖
-          <span id="lock-badge" style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(239,83,80,.15);color:var(--sell);font-weight:600">🔒 已鎖定</span>
-        </div>
-        <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.6">
-          安全鎖關閉時，機器人 Observation 持續運行但所有下單執行均暫停。
-        </div>
-        <div class="btn-row" style="margin-top:0">
-          <button class="btn-start" id="btn-unlock" onclick="showUnlockModal()" style="background:var(--lower);font-size:11px;padding:6px 10px">
-            🔓 解鎖系統
-          </button>
-          <button class="btn-stop" id="btn-lock" onclick="doLockSystem()" style="font-size:11px;padding:6px 10px">
-            🔒 重新鎖定
-          </button>
-        </div>
-      </div>
-
-      <!-- ═ SEMI_AUTO 訊號確認面板 ═ -->
-      <div id="signal-panel">
-        <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between">
-          <span>
-            待確認訊號
-            <span id="signal-count-badge" class="signal-badge" style="display:none">0</span>
-          </span>
-          <button class="btn-apply" onclick="fetchPendingSignals()" style="font-size:9px;padding:2px 7px">↻ 刷新</button>
-        </div>
-        <div class="signal-list" id="signal-list">
-          <div class="signal-empty">目前無待確認訊號</div>
-        </div>
-      </div>
-
-      <div>
-        <div class="stat-grid" style="margin-top:8px">
-          <div class="stat-box"><div class="stat-lbl">幣種</div><div class="stat-val" id="bot-symbol">--</div></div>
-          <div class="stat-box"><div class="stat-lbl">網格數</div><div class="stat-val" id="bot-grids">--</div></div>
-          <div class="stat-box"><div class="stat-lbl">上限</div><div class="stat-val" style="color:var(--upper)" id="bot-upper">--</div></div>
-          <div class="stat-box"><div class="stat-lbl">下限</div><div class="stat-val" style="color:var(--lower)" id="bot-lower">--</div></div>
-        </div>
-      </div>
-
-      <div>
-        <div class="sec-title">網格控制</div>
-        <div class="btn-row" style="margin-top:8px">
-          <button class="btn-start" id="btn-save" onclick="saveGrid()">🚀 確認設定並啟動網格</button>
-          <button class="btn-stop" id="btn-stop" onclick="confirmStopGrid()">⏹ 停止網格機器人</button>
-          <button class="btn-kill" id="btn-kill" onclick="confirmKillSwitch()">☠ 進階 Kill Switch（撤銷交易所掛單）</button>
-        </div>
-      </div>
-
-      <div style="background:var(--hover);border-radius:8px;padding:10px;font-size:11px;color:var(--muted);line-height:1.7">
-        <div style="font-weight:700;color:var(--text);margin-bottom:5px">📌 操作流程</div>
-        <div>① 用「點擊設上/下限」按鈕在圖表取值</div>
-        <div>② 查看「策略建議」選擇適合方案</div>
-        <div>③ 設定格數與總投入金額</div>
-        <div>④ 啟動網格，機器人進入監控</div>
-        <div>⑤ 觸及格線時自動下單來回獲利</div>
-      </div>
-    </div>
-
-    <!-- ═══ 錢包 ═══ -->
-    <div class="tab-panel" id="panel-wallet">
-      <div>
-        <div class="sec-title">帳戶總覽</div>
-        <div class="stat-grid" style="margin-top:8px">
-          <div class="stat-box"><div class="stat-lbl">USDT 可用</div><div class="stat-val" id="wallet-usdt-free">--</div></div>
-          <div class="stat-box"><div class="stat-lbl">USDT 總計</div><div class="stat-val" id="wallet-usdt-total">--</div></div>
-        </div>
-      </div>
-      <div>
-        <div class="sec-title">持倉列表</div>
-        <div id="wallet-positions" style="margin-top:8px;display:flex;flex-direction:column;gap:3px">
-          <div style="text-align:center;color:var(--muted);font-size:11px;padding:10px">點擊下方刷新</div>
-        </div>
-      </div>
-      <div>
-        <div class="sec-title">持倉均價線（紫色）</div>
-        <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
-          <input type="number" id="inp-avg-cost" step="0.01" min="0"
-                 placeholder="輸入持倉均價…"
-                 style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px"
-                 oninput="updateAvgCostLine()">
-          <button class="btn-apply" onclick="clearAvgCostLine()" style="white-space:nowrap">清除</button>
-        </div>
-      </div>
-      <button class="btn-start" style="background:var(--purple);margin-top:auto" onclick="fetchFullBalance()">
-        ↻ 刷新餘額
-      </button>
-    </div>
-
-  </aside>
 </main>
+
 
 <!-- ════ JavaScript ════ -->
 <script>
@@ -1151,18 +1234,19 @@ const ROUND_TRIP_FEE  = 0.002;
 const MIN_NET_PROFIT  = 0.004;
 const MIN_ORDER_USDT  = 5;
 
-const C = { upper: '#f97316', lower: '#22c55e', purple: '#a371f7' };
+const C = { upper: '#f97316', lower: '#00ff9d', purple: '#9932CC' };
 
 // ══════════════════════════════════════════════
 //  Tab Switching
 // ══════════════════════════════════════════════
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach((t, i) => {
-    const panels = ['suggest', 'settings', 'bot', 'wallet'];
+  document.querySelectorAll('#right-col .tab').forEach((t, i) => {
+    const panels = ['settings', 'bot', 'wallet'];
     t.classList.toggle('active', panels[i] === name);
   });
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  document.getElementById(`panel-${name}`).classList.add('active');
+  document.querySelectorAll('#right-col .tab-panel').forEach(p => p.classList.remove('active'));
+  const el = document.getElementById(`panel-${name}`);
+  if (el) el.classList.add('active');
 }
 
 // ══════════════════════════════════════════════
@@ -1181,12 +1265,12 @@ function _chartCommonOpts(wrap, height, showTimeLabels) {
     return `${HH}:${mm}`;
   };
   return {
-    layout:  { background: { color: '#0d1117' }, textColor: '#8b949e' },
-    grid:    { vertLines: { color: '#1a2030' }, horzLines: { color: '#1a2030' } },
+    layout:  { background: { color: '#0B0E14' }, textColor: '#6B7394' },
+    grid:    { vertLines: { color: '#1E2435' }, horzLines: { color: '#1E2435' } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: '#30363d' },
+    rightPriceScale: { borderColor: '#2A2E39' },
     timeScale: {
-      borderColor: '#30363d',
+      borderColor: '#2A2E39',
       timeVisible: showTimeLabels,
       secondsVisible: false,
       tickMarkFormatter: showTimeLabels ? tickFmt : undefined,
@@ -1209,9 +1293,9 @@ function initChart() {
 
   // Candlestick — pure visible-candle autoscale (no autoscaleInfoProvider override)
   candleSeries = mainChart.addCandlestickSeries({
-    upColor:       '#22c55e', downColor:       '#f85149',
-    borderUpColor: '#22c55e', borderDownColor: '#f85149',
-    wickUpColor:   '#22c55e', wickDownColor:   '#f85149',
+    upColor:       '#00ff9d', downColor:       '#ff3b69',
+    borderUpColor: '#00ff9d', borderDownColor: '#ff3b69',
+    wickUpColor:   '#00ff9d', wickDownColor:   '#ff3b69',
   });
 
   // EMA(20) — default invisible
@@ -1240,7 +1324,7 @@ function initChart() {
   subChart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.0, bottom: 0.35 } });
 
   rsiSeries = subChart.addLineSeries({
-    color: '#a371f7', lineWidth: 1, priceScaleId: 'rsi',
+    color: '#9932CC', lineWidth: 1, priceScaleId: 'rsi',
     priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
   });
   subChart.priceScale('rsi').applyOptions({ scaleMargins: { top: 0.35, bottom: 0.0 } });
@@ -1517,7 +1601,7 @@ async function loadTradeMarkers() {
       const px = isBuy ? (f.buy_price || 0) : (f.sell_price || 0);
       return {
         time: ts, position: isBuy ? 'belowBar' : 'aboveBar',
-        color: isBuy ? '#22c55e' : '#f85149',
+        color: isBuy ? '#00ff9d' : '#ff3b69',
         shape: isBuy ? 'arrowUp' : 'arrowDown',
         text: `${isBuy ? 'B' : 'S'} $${fmtK(px)}`,
       };
@@ -1555,7 +1639,7 @@ async function loadKlines(symbol, interval, limit, resetGrid) {
     // Sub-chart: Volume
     volumeSeries.setData(adj.map(k => ({
       time: k.time, value: k.volume,
-      color: k.close >= k.open ? 'rgba(34,197,94,.35)' : 'rgba(248,81,73,.35)',
+      color: k.close >= k.open ? 'rgba(0,255,157,.35)' : 'rgba(255,59,105,.35)',
     })));
 
     // Sub-chart: RSI(14)
@@ -1634,7 +1718,7 @@ function connectWS(symbol, interval) {
 function onKline(k) {
   const candle = { time: Math.floor(k.t / 1000) + TZ_OFFSET, open: +k.o, high: +k.h, low: +k.l, close: +k.c };
   candleSeries.update(candle);
-  volumeSeries.update({ time: candle.time, value: +k.v, color: +k.c >= +k.o ? 'rgba(34,197,94,.35)' : 'rgba(248,81,73,.35)' });
+  volumeSeries.update({ time: candle.time, value: +k.v, color: +k.c >= +k.o ? 'rgba(0,255,157,.35)' : 'rgba(255,59,105,.35)' });
   // Update RSI last point from cache
   if (_klinesCache.length > 14) {
     const rsiPts = calcRSI(_klinesCache, 14);
@@ -1655,17 +1739,14 @@ function stopPoll() { clearInterval(pollTimer); pollTimer = null; }
 //  Strategy Suggest
 // ══════════════════════════════════════════════
 async function refreshSuggest() {
-  document.getElementById('suggest-body').innerHTML = '<div class="suggest-loading">🔄 計算中…</div>';
   try {
     const r = await fetch(`/api/strategy_suggest?symbol=${currentSymbol}&interval=1h`);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
     suggestData = d;
     renderIndicators(d.indicators);
-    renderStrategies(d.strategies);
   } catch(e) {
-    document.getElementById('suggest-body').innerHTML =
-      `<div class="suggest-loading" style="color:var(--sell)">⚠️ ${e.message}</div>`;
+    console.warn('API Fetch Error:', e.message);
   }
 }
 
@@ -1679,37 +1760,7 @@ function renderIndicators(ind) {
   document.getElementById('ind-hv').textContent      = ind.hv_30d_pct;
 }
 
-function renderStrategies(strategies) {
-  const colors = { conservative: '#58a6ff', standard: '#e3b341', aggressive: '#f97316' };
-  const ranges  = Object.values(strategies).map(s => s.upper_price - s.lower_price);
-  const maxRange = Math.max(...ranges) || 1;
-  let html = '';
-  for (const [key, s] of Object.entries(strategies)) {
-    const col    = colors[key];
-    const range  = s.upper_price - s.lower_price;
-    const barPct = (range / maxRange * 100).toFixed(1);
-    const risk   = { conservative: '低風險・格密・頻繁成交', standard: '中風險・ATR 平衡格距', aggressive: '高風險・寬區間・單格獲利高' }[key];
-    html += `<div class="strategy-card" style="border-left:3px solid ${col}">
-      <div class="sc-head">
-        <span class="sc-name" style="color:${col}">${s.emoji} ${s.name}</span>
-        <button class="btn-apply" style="border-color:${col};color:${col}" onclick="applyStrategy('${key}')">套用 →</button>
-      </div>
-      <div class="sc-desc" style="color:var(--muted)">${risk}</div>
-      <div style="background:var(--bg);border-radius:3px;height:4px;margin:6px 0">
-        <div style="width:${barPct}%;height:100%;background:${col};border-radius:3px;opacity:.8"></div>
-      </div>
-      <div class="sc-vals">
-        <div class="sc-item"><span class="sc-lbl">▲ 上限</span><span class="sc-val" style="color:var(--upper)">$${fmtK(s.upper_price)}</span></div>
-        <div class="sc-item"><span class="sc-lbl">▼ 下限</span><span class="sc-val" style="color:var(--lower)">$${fmtK(s.lower_price)}</span></div>
-        <div class="sc-item"><span class="sc-lbl">格數</span><span class="sc-val">${s.grid_count} 格</span></div>
-        <div class="sc-item"><span class="sc-lbl">格距</span><span class="sc-val">$${fmtK(s.spacing)}</span></div>
-        <div class="sc-item"><span class="sc-lbl">區間幅</span><span class="sc-val">${(range/(s.upper_price+s.lower_price)*200).toFixed(1)}%</span></div>
-        <div class="sc-item"><span class="sc-lbl">單格利潤</span><span class="sc-val" style="color:${col}">${s.profit_pct}</span></div>
-      </div>
-    </div>`;
-  }
-  document.getElementById('suggest-body').innerHTML = html;
-}
+
 
 function applyStrategy(key) {
   if (!suggestData?.strategies?.[key]) return;
