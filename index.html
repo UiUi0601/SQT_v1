@@ -760,7 +760,7 @@
       <!-- Layer Toggles (default OFF) -->
       <div class="chart-toggles">
         <button class="chart-toggle-btn" id="tog-bb"   onclick="toggleLayer('bb')"  >BB</button>
-        <button class="chart-toggle-btn" id="tog-ema"  onclick="toggleLayer('ema')" >EMA</button>
+        <button class="chart-toggle-btn" id="tog-ema"  onclick="toggleLayer('ema')" >EMA 7/25/99</button>
         <button class="chart-toggle-btn" id="tog-grid" onclick="toggleLayer('grid')">Grid</button>
       </div>
 
@@ -1214,7 +1214,7 @@ function closeModal() {
 //  State Variables
 // ══════════════════════════════════════════════
 let mainChart, subChart;
-let candleSeries, volumeSeries, rsiSeries, emaSeries, bbUpperSeries, bbLowerSeries, bbMidSeries;
+let candleSeries, volumeSeries, rsiSeries, ema7Series, ema25Series, ema99Series, bbUpperSeries, bbLowerSeries, bbMidSeries;
 let upperLine = null, lowerLine = null, avgCostLine = null;
 const _layerVisible     = { bb: false, ema: false, grid: false };
 const _signalPriceLines = {};
@@ -1298,12 +1298,11 @@ function initChart() {
     wickUpColor:   '#00ff9d', wickDownColor:   '#ff3b69',
   });
 
-  // EMA(20) — default invisible
-  emaSeries = mainChart.addLineSeries({
-    color: '#e3b341', lineWidth: 1, priceLineVisible: false,
-    lastValueVisible: false, crosshairMarkerVisible: false,
-    visible: false,
-  });
+  // EMA(7, 25, 99) — default invisible
+  const _emaOpts = { lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, visible: false };
+  ema7Series  = mainChart.addLineSeries({ color: '#f5d300', ..._emaOpts }); // Yellow
+  ema25Series = mainChart.addLineSeries({ color: '#ff9800', ..._emaOpts }); // Orange
+  ema99Series = mainChart.addLineSeries({ color: '#e040fb', ..._emaOpts }); // Purple
 
   // Bollinger Bands — default invisible
   const _bbOpts = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, visible: false };
@@ -1503,13 +1502,17 @@ function calcBB(data, period = 20, mult = 2) {
 function applyIndicators(data) {
   if (!data || data.length < 20) return;
   try {
-    emaSeries.setData(calcEMA(data, 20));
+    ema7Series.setData(calcEMA(data, 7));
+    ema25Series.setData(calcEMA(data, 25));
+    ema99Series.setData(calcEMA(data, 99));
     const bb = calcBB(data, 20);
     bbUpperSeries.setData(bb.upper);
     bbMidSeries.setData(bb.mid);
     bbLowerSeries.setData(bb.lower);
-    // Restore visibility state after setData (setData can reset options in some versions)
-    emaSeries.applyOptions({ visible: _layerVisible.ema });
+    // Restore visibility state after setData
+    ema7Series.applyOptions({ visible: _layerVisible.ema });
+    ema25Series.applyOptions({ visible: _layerVisible.ema });
+    ema99Series.applyOptions({ visible: _layerVisible.ema });
     bbUpperSeries.applyOptions({ visible: _layerVisible.bb });
     bbMidSeries.applyOptions(  { visible: _layerVisible.bb });
     bbLowerSeries.applyOptions({ visible: _layerVisible.bb });
@@ -1546,7 +1549,9 @@ function toggleLayer(layer) {
     bbMidSeries.applyOptions(  { visible: on });
     bbLowerSeries.applyOptions({ visible: on });
   } else if (layer === 'ema') {
-    emaSeries.applyOptions({ visible: on });
+    ema7Series.applyOptions({ visible: on });
+    ema25Series.applyOptions({ visible: on });
+    ema99Series.applyOptions({ visible: on });
   } else if (layer === 'grid') {
     if (!on) {
       (window._gridLines || []).forEach(l => { try { candleSeries.removePriceLine(l); } catch(e){} });
@@ -2474,7 +2479,9 @@ function onSymbolChange() {
   setWsState('connecting');
   if (candleSeries) { candleSeries.setData([]); candleSeries.setMarkers([]); }
   if (volumeSeries) volumeSeries.setData([]);
-  if (emaSeries)    emaSeries.setData([]);
+  if (ema7Series)   ema7Series.setData([]);
+  if (ema25Series)  ema25Series.setData([]);
+  if (ema99Series)  ema99Series.setData([]);
   if (bbUpperSeries) bbUpperSeries.setData([]);
   if (bbMidSeries)   bbMidSeries.setData([]);
   if (bbLowerSeries) bbLowerSeries.setData([]);
